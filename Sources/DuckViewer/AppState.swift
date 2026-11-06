@@ -604,13 +604,27 @@ final class AppState: ObservableObject {
         NSPasteboard.general.setString(command, forType: .string)
     }
 
+    /// 이미 저장한 답이면 그 메모를 보여주기만 한다.
     func saveAsNote(_ message: ChatMessage) {
+        if let noteID = message.savedNoteID, let note = notes.notes.first(where: { $0.id == noteID }) {
+            sidebarTab = .notes
+            sidebarVisibility = .all
+            show(note)
+            return
+        }
         let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         let request = messages.last { $0.role == .user && $0.createdAt <= message.createdAt }
         let source = [request?.title ?? request?.text.prefix(30).description, message.scopeLabel]
             .compactMap { $0 }.joined(separator: " · ")
-        notes.add(Note(page: message.anchorPage ?? currentPageIndex, text: text, quote: nil, source: "Claude · \(source)"))
+        let note = Note(page: message.anchorPage ?? currentPageIndex, text: text, quote: nil, source: "Claude · \(source)")
+        notes.add(note)
+        chats.update(message.id, persist: true) { $0.savedNoteID = note.id }
+    }
+
+    func isSavedAsNote(_ message: ChatMessage) -> Bool {
+        guard let noteID = message.savedNoteID else { return false }
+        return notes.notes.contains { $0.id == noteID }
     }
 
     // MARK: - 메모와 하이라이트
@@ -777,6 +791,10 @@ extension AppState {
                 let range = pageRange(of: item)
                 runAI(.template(template), scope: .chapter(item.title, range.lowerBound, range.upperBound))
             }
+        }
+        if defaults.bool(forKey: "DVSaveNote"), let answer = messages.first(where: { $0.status == .done }) {
+            saveAsNote(answer)
+            if let updated = messages.first(where: { $0.id == answer.id }) { saveAsNote(updated) }
         }
         if let question = defaults.string(forKey: "DVAsk") {
             // 앞의 요청이 끝난 뒤에 이어서 묻는다 (세션 이어가기 확인용)

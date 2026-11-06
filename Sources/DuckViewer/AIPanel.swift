@@ -185,7 +185,13 @@ private struct AssistantMessage: View {
                         NSPasteboard.general.setString(message.text, forType: .string)
                         copied = true
                     }
-                    Button("메모로 저장", systemImage: "note.text.badge.plus") { state.saveAsNote(message) }
+                    if state.isSavedAsNote(message) {
+                        Button("메모에 저장됨", systemImage: "checkmark.circle.fill") { state.saveAsNote(message) }
+                            .foregroundStyle(.green)
+                            .help("메모 목록에서 보기")
+                    } else {
+                        Button("메모로 저장", systemImage: "note.text.badge.plus") { state.saveAsNote(message) }
+                    }
                     Spacer()
                     if let meta = metadata {
                         Text(meta).foregroundStyle(.tertiary)

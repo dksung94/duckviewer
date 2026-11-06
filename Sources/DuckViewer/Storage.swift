@@ -255,6 +255,8 @@ struct ChatMessage: Codable, Identifiable, Equatable {
     var error: String?
     var costUSD: Double?
     var durationMs: Int?
+    /// "메모로 저장"으로 만든 메모. 같은 답을 여러 번 저장하지 않도록 기억한다.
+    var savedNoteID: UUID?
 
     var isRunning: Bool { status == .running }
 }

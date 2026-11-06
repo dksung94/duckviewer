@@ -205,7 +205,10 @@ private struct NoteRow: View {
                         .lineLimit(4)
                 }
                 if !note.text.isEmpty {
-                    Text(note.text).font(.callout).lineLimit(8)
+                    // Claude 답을 저장한 메모는 Markdown이므로 답변 화면과 같이 그린다.
+                    Text(note.source == nil ? AttributedString(note.text) : PageLinkedMarkdown.render(note.text))
+                        .font(.callout)
+                        .lineLimit(8)
                 }
             }
         }
