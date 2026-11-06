@@ -24,8 +24,8 @@ private let presets: [AIPreset] = [
     AIPreset(name: "Claude Code (Sonnet)", command: "claude -p --model sonnet", note: "빠르고 저렴"),
     AIPreset(name: "Codex CLI", command: "codex exec --skip-git-repo-check -", note: "stdin에서 프롬프트를 읽음"),
     AIPreset(name: "Gemini CLI", command: "gemini", note: "미검증, stdin 입력"),
-    AIPreset(name: "Ollama 로컬 Qwen3.5 9B", command: "ollama run qwen3.5:9b", note: "미검증, 약 6.6GB, `ollama pull qwen3.5:9b` 필요"),
-    AIPreset(name: "Ollama 로컬 Qwen3.5 27B", command: "ollama run qwen3.5:27b", note: "미검증, 약 17GB, 메모리 32GB 이상 권장"),
+    AIPreset(name: "Ollama 로컬 Qwen3.5 9B", command: "ollama run qwen3.5:9b --think=false --nowordwrap", note: "오프라인, 약 7.6GB, `ollama pull qwen3.5:9b` 필요"),
+    AIPreset(name: "Ollama 로컬 Qwen3.5 27B", command: "ollama run qwen3.5:27b --think=false --nowordwrap", note: "미검증, 약 17GB, 메모리 32GB 이상 권장"),
 ]
 
 private struct AISettingsTab: View {

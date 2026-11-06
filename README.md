@@ -44,7 +44,7 @@ open -a "$PWD/build/DuckViewer.app" some.pdf   # 파일과 함께 열기
 | `claude -p --model sonnet` | 모델 지정 |
 | `codex exec --skip-git-repo-check -` | PDF 폴더가 git 저장소가 아니어도 실행되게 |
 | `gemini -p` | |
-| `ollama run qwen3.5:9b` | 로컬 모델 (오프라인). `ollama pull qwen3.5:9b` 먼저 |
+| `ollama run qwen3.5:9b --think=false --nowordwrap` | 로컬 모델 (오프라인). `brew install ollama && brew services start ollama && ollama pull qwen3.5:9b` 먼저. `--think=false`가 없으면 생각 과정이 답변에 섞인다 |
 
 설정의 **프리셋** 메뉴에서 고를 수 있고, **프롬프트 템플릿** 탭에서 템플릿을 추가하거나 순서를 바꿀 수 있다.
 

@@ -287,13 +287,13 @@ final class AIRunner: ObservableObject {
     private func receive(_ data: Data, from source: Process) {
         guard process === source, !data.isEmpty else { return }
         outBuffer.append(data)
-        callbacks?.output(String(decoding: outBuffer, as: UTF8.self))
+        callbacks?.output(stripANSI(String(decoding: outBuffer, as: UTF8.self)))
     }
 
     private func receive(error data: Data, from source: Process) {
         guard process === source, !data.isEmpty else { return }
         errBuffer.append(data)
-        callbacks?.error(String(decoding: errBuffer, as: UTF8.self))
+        callbacks?.error(stripANSI(String(decoding: errBuffer, as: UTF8.self)))
     }
 
     private func finish(_ source: Process, status: Int32) {
@@ -309,6 +309,12 @@ final class AIRunner: ObservableObject {
     private func removePromptFile() {
         if let promptFile { try? FileManager.default.removeItem(at: promptFile) }
         promptFile = nil
+    }
+
+    /// `ollama run`의 진행 표시처럼 CLI가 섞어 보내는 터미널 제어문자를 지운다.
+    private func stripANSI(_ text: String) -> String {
+        guard text.contains("\u{1B}") else { return text }
+        return text.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[ -/]*[@-~]", with: "", options: .regularExpression)
     }
 
     private func shellQuote(_ value: String) -> String {
