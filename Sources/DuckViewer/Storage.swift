@@ -8,6 +8,7 @@ enum AppPaths {
     }
 
     static var notes: URL { support.appendingPathComponent("notes", isDirectory: true) }
+    static var chats: URL { support.appendingPathComponent("chats", isDirectory: true) }
 
     /// 터미널 속 AI 에이전트가 읽는 현재 읽기 상태
     static var context: URL {
@@ -71,16 +72,19 @@ enum ReadingContext {
         let pageCount: Int
         let selection: String
         let pageText: String
+        /// 바깥 터미널에서 `claude --resume <id>`로 같은 대화를 이어갈 수 있다.
+        let claudeSession: String?
         let updatedAt: Date
     }
 
-    static func write(file: URL?, page: Int, pageCount: Int, selection: String, pageText: String) {
+    static func write(file: URL?, page: Int, pageCount: Int, selection: String, pageText: String, claudeSession: String?) {
         let payload = Payload(
             file: file?.path,
             page: page + 1,
             pageCount: pageCount,
             selection: selection,
             pageText: pageText,
+            claudeSession: claudeSession,
             updatedAt: Date()
         )
         let encoder = JSONEncoder()
@@ -214,6 +218,113 @@ final class NotesStore: ObservableObject {
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(File(file: fileURL.path, notes: notes)) else { return }
         AppPaths.ensureDirectory(AppPaths.notes)
+        try? data.write(to: path, options: .atomic)
+    }
+}
+
+// MARK: - Claude 대화
+
+struct ChatMessage: Codable, Identifiable, Equatable {
+    enum Role: String, Codable { case user, assistant }
+    enum Status: String, Codable { case running, done, failed, cancelled }
+
+    var id = UUID()
+    var role: Role
+    var text: String
+    /// 사용자 메시지: 템플릿 이름 (자유 질문이면 nil)
+    var title: String?
+    var icon: String?
+    var scopeLabel: String?
+    /// 0부터 시작하는 페이지 인덱스. 범위 칩을 누르면 이동하고, 메모로 저장할 때 쓴다.
+    var anchorPage: Int?
+    var createdAt = Date()
+    // 아래는 Claude 응답에만 쓴다.
+    var status: Status?
+    var activity: String?
+    var error: String?
+    var costUSD: Double?
+    var durationMs: Int?
+
+    var isRunning: Bool { status == .running }
+}
+
+/// 문서 하나에 Claude 세션 하나. 세션은 시작한 폴더(cwd)에 묶이므로 함께 저장한다.
+struct ChatLog: Codable {
+    var sessionID: String?
+    var workingDirectory: String?
+    var messages: [ChatMessage] = []
+}
+
+@MainActor
+final class ChatStore: ObservableObject {
+    @Published private(set) var log = ChatLog()
+    private var key: String?
+
+    func load(key: String?) {
+        self.key = key
+        log = ChatLog()
+        guard let path = storagePath, let data = try? Data(contentsOf: path) else { return }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do {
+            log = try decoder.decode(ChatLog.self, from: data)
+            // 앱이 응답 중에 꺼졌던 메시지
+            for index in log.messages.indices where log.messages[index].status == .running {
+                log.messages[index].status = .cancelled
+                log.messages[index].activity = nil
+            }
+        } catch {
+            let backup = path.appendingPathExtension("bak-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: path, to: backup)
+            NSLog("DuckViewer: 대화 파일을 읽지 못해 \(backup.path) 로 옮겼습니다: \(error)")
+        }
+    }
+
+    func startSession(_ id: String, in directory: URL) {
+        log.sessionID = id
+        log.workingDirectory = directory.path
+        save()
+    }
+
+    func append(_ message: ChatMessage) {
+        log.messages.append(message)
+        save()
+    }
+
+    /// 스트리밍 중에는 자주 바뀌므로 `persist`가 true일 때만 디스크에 쓴다.
+    func update(_ id: UUID, persist: Bool = false, _ change: (inout ChatMessage) -> Void) {
+        guard let index = log.messages.firstIndex(where: { $0.id == id }) else { return }
+        change(&log.messages[index])
+        if persist { save() }
+    }
+
+    func remove(_ id: UUID) {
+        log.messages.removeAll { $0.id == id }
+        save()
+    }
+
+    /// `keepingMessages`면 화면의 기록은 두고 세션만 새로 시작한다.
+    func reset(keepingMessages: Bool = false) {
+        if keepingMessages {
+            log.sessionID = nil
+            log.workingDirectory = nil
+        } else {
+            log = ChatLog()
+        }
+        save()
+    }
+
+    private var storagePath: URL? {
+        key.map { AppPaths.chats.appendingPathComponent("\($0).json") }
+    }
+
+    private func save() {
+        guard let path = storagePath else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(log) else { return }
+        AppPaths.ensureDirectory(AppPaths.chats)
         try? data.write(to: path, options: .atomic)
     }
 }

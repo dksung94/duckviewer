@@ -3,8 +3,8 @@ import SwiftUI
 struct SettingsView: View {
     var body: some View {
         TabView {
-            AISettingsTab()
-                .tabItem { Label("AI", systemImage: "sparkles") }
+            ClaudeTab()
+                .tabItem { Label("Claude", systemImage: "sparkles") }
             TemplatesTab()
                 .tabItem { Label("프롬프트 템플릿", systemImage: "text.badge.star") }
         }
@@ -12,57 +12,60 @@ struct SettingsView: View {
     }
 }
 
-private struct AIPreset: Identifiable {
-    let id = UUID()
-    let name: String
-    let command: String
-    let note: String
-}
-
-private let presets: [AIPreset] = [
-    AIPreset(name: "Claude Code", command: "claude -p", note: "기본값"),
-    AIPreset(name: "Claude Code (Sonnet)", command: "claude -p --model sonnet", note: "빠르고 저렴"),
-    AIPreset(name: "Codex CLI", command: "codex exec --skip-git-repo-check -", note: "stdin에서 프롬프트를 읽음"),
-    AIPreset(name: "Gemini CLI", command: "gemini", note: "미검증, stdin 입력"),
-    AIPreset(name: "Ollama 로컬 Qwen3.5 9B", command: "ollama run qwen3.5:9b --think=false --nowordwrap", note: "오프라인, 약 7.6GB, `ollama pull qwen3.5:9b` 필요"),
-    AIPreset(name: "Ollama 로컬 Qwen3.5 27B", command: "ollama run qwen3.5:27b --think=false --nowordwrap", note: "미검증, 약 17GB, 메모리 32GB 이상 권장"),
-]
-
-private struct AISettingsTab: View {
-    @AppStorage(AISettings.commandKey) private var command = AISettings.defaultCommand
-    @AppStorage(AISettings.languageKey) private var language = AISettings.defaultLanguage
+private struct ClaudeTab: View {
+    @AppStorage(ClaudeSettings.modelKey) private var model = ""
+    @AppStorage(ClaudeSettings.languageKey) private var language = ClaudeSettings.defaultLanguage
+    @AppStorage(ClaudeSettings.allowWriteKey) private var allowWrite = false
+    @State private var claudePath: String?
 
     var body: some View {
         Form {
             Section {
-                HStack {
-                    TextField("AI 명령어", text: $command, prompt: Text(AISettings.defaultCommand))
-                        .font(.body.monospaced())
-                    Menu("프리셋") {
-                        ForEach(presets) { preset in
-                            Button {
-                                command = preset.command
-                            } label: {
-                                Text(preset.name)
-                                Text(preset.note.isEmpty ? preset.command : "\(preset.command) · \(preset.note)")
-                            }
-                        }
-                    }
-                    .fixedSize()
+                Picker("모델", selection: $model) {
+                    Text("Claude Code 기본값").tag("")
+                    Text("Opus").tag("opus")
+                    Text("Sonnet").tag("sonnet")
+                    Text("Haiku").tag("haiku")
                 }
-                Text("""
-                프롬프트는 stdin으로 전달되고, 명령어는 터미널과 같은 셸 환경(PATH 포함)에서 실행됩니다.
-                치환 변수: {file} 현재 PDF 경로, {page} 현재 페이지 번호,
-                {prompt_file} 프롬프트를 담은 임시 파일 경로 (stdin을 읽지 않는 CLI용, 예: mycli --input {prompt_file})
-                """)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                TextField("응답 언어", text: $language, prompt: Text(ClaudeSettings.defaultLanguage))
             }
             Section {
-                TextField("응답 언어", text: $language, prompt: Text(AISettings.defaultLanguage))
+                Toggle("Claude가 PDF 폴더에 새 파일을 만들 수 있게 허용", isOn: $allowWrite)
+                Text("켜면 “요약을 파일로 저장해줘” 같은 요청을 처리할 수 있습니다. 기존 파일은 덮어쓰지 않도록 지시합니다. 끄면 PDF 읽기만 허용합니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section {
+                LabeledContent("claude") {
+                    Text(claudePath ?? "찾는 중…")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(claudePath == "찾지 못함" ? .red : .secondary)
+                        .textSelection(.enabled)
+                }
+                Text("문서마다 Claude Code 세션이 하나씩 만들어지고, PDF가 있는 폴더에서 실행됩니다. 세션은 Claude Code에도 남아서 터미널에서 `claude --resume`으로 이어갈 수 있습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .task { claudePath = await Self.findClaude() }
+    }
+
+    private static func findClaude() async -> String {
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-c", "command -v claude"]
+            process.environment = ShellEnvironment.resolved
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+            let path = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return path.isEmpty ? "찾지 못함" : path
+        }.value
     }
 }
 

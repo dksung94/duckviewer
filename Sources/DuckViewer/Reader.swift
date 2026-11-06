@@ -47,11 +47,15 @@ final class DuckPDFView: PDFView {
             }
             items.append(highlight)
             items.append(ClosureMenuItem("메모 추가…", symbol: "note.text") { state.beginNote() })
-            items.append(aiMenu(state, scope: .selection, title: "선택 영역 AI"))
-            items.append(ClosureMenuItem("터미널로 보내기", symbol: "terminal") { state.sendSelectionToTerminal() })
+            items.append(aiMenu(state, scope: .selection, title: "선택 영역 Claude"))
+            items.append(ClosureMenuItem("Claude에게 질문…", symbol: "bubble.left") {
+                state.aiScopeKind = .selection
+                state.showInspector = true
+                state.composerFocusRequest += 1
+            })
         } else {
             items.append(ClosureMenuItem("이 페이지에 메모…", symbol: "note.text") { state.beginNote() })
-            items.append(aiMenu(state, scope: .currentPage, title: "현재 페이지 AI"))
+            items.append(aiMenu(state, scope: .currentPage, title: "현재 페이지 Claude"))
         }
         items.append(.separator())
         for (index, item) in items.enumerated() {
@@ -158,12 +162,11 @@ private struct SelectionBar: View {
                     }
                 }
                 Divider()
-                Button("AI에게 질문…", systemImage: "bubble.left") {
+                Button("Claude에게 질문…", systemImage: "bubble.left") {
                     state.aiScopeKind = .selection
                     state.showInspector = true
                     state.composerFocusRequest += 1
                 }
-                Button("터미널로 보내기", systemImage: "terminal") { state.sendSelectionToTerminal() }
                 Button("복사", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(state.selectionText, forType: .string)

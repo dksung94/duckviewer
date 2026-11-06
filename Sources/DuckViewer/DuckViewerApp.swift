@@ -48,7 +48,7 @@ struct DuckViewerApp: App {
                     state.sidebarVisibility = .all
                 }
             }
-            CommandMenu("AI") {
+            CommandMenu("Claude") {
                 if let first = state.templates.first {
                     Button("\(first.name) – 현재 페이지") { state.runTemplate(at: 0, scope: .currentPage) }
                         .keyboardShortcut("1", modifiers: [.command, .shift])
@@ -68,16 +68,19 @@ struct DuckViewerApp: App {
                 }
                 .disabled(!state.hasSelection)
                 Divider()
-                Button("AI 중단") { state.ai.cancel() }
+                Button("중단") { state.claude.cancel() }
                     .keyboardShortcut(".", modifiers: .command)
-                    .disabled(!state.ai.isRunning)
-                Button("결과 모두 지우기") { state.clearTurns() }
+                    .disabled(!state.claude.isRunning)
+                Divider()
+                Button("새 대화…") { state.newConversation() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(state.messages.isEmpty && !state.hasSession)
+                Button("터미널에서 이어하기 명령 복사") { state.copyResumeCommand() }
+                    .disabled(state.resumeCommand == nil)
             }
             CommandGroup(before: .sidebar) {
-                Button(state.showInspector ? "AI 패널 숨기기" : "AI 패널 보기") { state.showInspector.toggle() }
+                Button(state.showInspector ? "Claude 패널 숨기기" : "Claude 패널 보기") { state.showInspector.toggle() }
                     .keyboardShortcut("0", modifiers: [.command, .option])
-                Button(state.showTerminal ? "터미널 숨기기" : "터미널 보기") { state.showTerminal.toggle() }
-                    .keyboardShortcut("`", modifiers: .control)
                 Divider()
                 Button("확대") { state.zoomIn() }
                     .keyboardShortcut("+")
@@ -85,9 +88,6 @@ struct DuckViewerApp: App {
                     .keyboardShortcut("-")
                 Button("화면에 맞추기") { state.zoomToFit() }
                     .keyboardShortcut("0")
-                Picker("터미널 위치", selection: $state.terminalPosition) {
-                    ForEach(TerminalPosition.allCases) { Text($0.label).tag($0) }
-                }
                 Picker("읽기 테마", selection: $state.theme) {
                     ForEach(ReadingTheme.allCases) { Text($0.label).tag($0) }
                 }

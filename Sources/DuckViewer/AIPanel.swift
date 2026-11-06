@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// 오른쪽 인스펙터: 빠른 실행 템플릿, 결과 카드, 질문 입력 (Acrobat AI Assistant, Readwise Ghostreader와 같은 위치)
+/// 오른쪽 인스펙터: 문서마다 하나씩 이어지는 Claude 대화
 struct AIPanel: View {
     @EnvironmentObject private var state: AppState
 
@@ -9,7 +9,7 @@ struct AIPanel: View {
         VStack(spacing: 0) {
             header
             Divider()
-            results
+            conversation
             Divider()
             Composer()
         }
@@ -26,31 +26,42 @@ struct AIPanel: View {
     private var header: some View {
         HStack(spacing: 6) {
             Image(systemName: "sparkles").foregroundStyle(.tint)
-            Text("AI").font(.headline)
-            Text(AISettings.command)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .help("설정(⌘,)에서 바꿀 수 있습니다")
-            Spacer()
-            if !state.turns.isEmpty {
-                Button { state.clearTurns() } label: { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-                    .help("결과 모두 지우기")
+            Text("Claude").font(.headline)
+            if !ClaudeSettings.model.isEmpty {
+                Text(ClaudeSettings.model)
+                    .font(.caption)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.quaternary, in: Capsule())
             }
+            Spacer()
+            Menu {
+                Button("새 대화", systemImage: "square.and.pencil") { state.newConversation() }
+                    .disabled(state.messages.isEmpty && !state.hasSession)
+                Button("터미널에서 이어하기 명령 복사", systemImage: "terminal") { state.copyResumeCommand() }
+                    .disabled(state.resumeCommand == nil)
+                Divider()
+                Button("설정…") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(state.resumeCommand ?? "아직 대화가 없습니다")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
 
     @ViewBuilder
-    private var results: some View {
-        if state.turns.isEmpty {
+    private var conversation: some View {
+        if state.messages.isEmpty {
             VStack(spacing: 10) {
-                Image(systemName: "text.bubble").font(.largeTitle).foregroundStyle(.tertiary)
-                Text("아래에서 범위를 고르고 템플릿을 누르거나 질문하세요.")
+                Image(systemName: "bubble.left.and.text.bubble.right").font(.largeTitle).foregroundStyle(.tertiary)
+                Text(state.document == nil ? "PDF를 열면 이 문서와의 대화가 시작됩니다." : "이 문서에 대해 무엇이든 물어보세요.")
                     .multilineTextAlignment(.center)
-                Text("텍스트를 드래그하면 선택 영역이 자동으로 범위가 됩니다.\n이어지는 대화는 아래 터미널에서 `claude`를 실행해 나누세요.")
+                Text("문서마다 대화가 따로 저장되고, 다시 열면 이어집니다.\n텍스트를 드래그하면 그 부분이 질문의 범위가 됩니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -60,104 +71,139 @@ struct AIPanel: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(state.turns) { turn in
-                            TurnCard(turn: turn).id(turn.id)
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(state.messages) { message in
+                            Group {
+                                switch message.role {
+                                case .user: UserBubble(message: message)
+                                case .assistant: AssistantMessage(message: message)
+                                }
+                            }
+                            .id(message.id)
                         }
+                        Color.clear.frame(height: 1).id("bottom")
                     }
-                    .padding(10)
+                    .padding(12)
                 }
-                .onChange(of: state.turns.count) {
-                    if let last = state.turns.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .top) }
-                    }
+                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .onChange(of: state.messages.count) {
+                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                .onChange(of: state.messages.last?.text) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
         }
     }
 }
 
-private struct TurnCard: View {
+private struct ScopeChip: View {
     @EnvironmentObject private var state: AppState
-    let turn: AITurn
+    let label: String
+    let page: Int?
+
+    var body: some View {
+        Button { if let page { state.goToPage(page) } } label: {
+            Text(label)
+                .font(.caption2)
+                .lineLimit(1)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.quaternary, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("이 위치로 이동")
+    }
+}
+
+private struct UserBubble: View {
+    let message: ChatMessage
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            if let scope = message.scopeLabel {
+                ScopeChip(label: scope, page: message.anchorPage)
+            }
+            HStack(spacing: 6) {
+                if let title = message.title {
+                    Image(systemName: message.icon ?? "sparkles")
+                    Text(title).fontWeight(.medium)
+                } else {
+                    Text(message.text).textSelection(.enabled)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .foregroundStyle(.white)
+            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 14))
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.leading, 40)
+    }
+}
+
+private struct AssistantMessage: View {
+    @EnvironmentObject private var state: AppState
+    let message: ChatMessage
     @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: turn.icon).foregroundStyle(.tint)
-                Text(turn.title).font(.callout.weight(.semibold)).lineLimit(2)
-                Spacer(minLength: 4)
-                Button { state.goToPage(turn.anchorPage) } label: {
-                    Text(turn.scopeLabel)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .help("이 범위로 이동")
-            }
-
-            if !turn.output.isEmpty {
-                Text(PageLinkedMarkdown.render(turn.output))
+            if !message.text.isEmpty {
+                Text(PageLinkedMarkdown.render(message.text))
                     .textSelection(.enabled)
-                    .lineSpacing(2)
+                    .lineSpacing(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if turn.isRunning {
+            if message.isRunning {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text(turn.output.isEmpty ? "응답을 기다리는 중…" : "받는 중…")
+                    Text(message.activity ?? (message.text.isEmpty ? "생각하는 중…" : "쓰는 중…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("중단") { state.ai.cancel() }
-                        .controlSize(.small)
                 }
             }
 
-            if turn.status == .cancelled {
+            switch message.status {
+            case .cancelled:
                 Text("중단됨").font(.caption).foregroundStyle(.secondary)
+            case .failed:
+                Text(message.error ?? "실패했습니다")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .lineLimit(10)
+            default:
+                EmptyView()
             }
 
-            if turn.failed || (!turn.isRunning && turn.output.isEmpty && !turn.error.isEmpty) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if !turn.error.isEmpty {
-                        Text(turn.error)
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                            .lineLimit(12)
-                    }
-                    if case let .finished(code) = turn.status, code != 0 {
-                        Text("종료 코드 \(code). 설정(⌘,)에서 AI 명령어를 확인하세요.").font(.caption)
-                    }
-                }
-                .foregroundStyle(.red)
-            }
-
-            if !turn.isRunning, !turn.output.isEmpty {
+            if message.status == .done, !message.text.isEmpty {
                 HStack(spacing: 12) {
                     Button(copied ? "복사됨" : "복사", systemImage: copied ? "checkmark" : "doc.on.doc") {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(turn.output, forType: .string)
+                        NSPasteboard.general.setString(message.text, forType: .string)
                         copied = true
                     }
-                    Button("메모로 저장", systemImage: "note.text.badge.plus") { state.saveAsNote(turn) }
+                    Button("메모로 저장", systemImage: "note.text.badge.plus") { state.saveAsNote(message) }
                     Spacer()
-                    Button { state.removeTurn(turn) } label: { Image(systemName: "xmark") }
-                        .help("이 결과 지우기")
+                    if let meta = metadata {
+                        Text(meta).foregroundStyle(.tertiary)
+                    }
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .padding(.trailing, 8)
+    }
+
+    private var metadata: String? {
+        var parts: [String] = []
+        if let ms = message.durationMs { parts.append(String(format: "%.1f초", Double(ms) / 1000)) }
+        if let cost = message.costUSD { parts.append(String(format: "$%.3f", cost)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
@@ -185,11 +231,11 @@ private struct Composer: View {
                     }
                 }
             }
-            .disabled(!state.canRunPanelScope || state.ai.isRunning)
+            .disabled(!state.canRunPanelScope || state.claude.isRunning)
 
             HStack(alignment: .bottom, spacing: 6) {
-                TextField("이 범위에 대해 질문하기", text: $question, axis: .vertical)
-                    .lineLimit(1...5)
+                TextField(state.messages.isEmpty ? "이 범위에 대해 질문하기" : "이어서 질문하기", text: $question, axis: .vertical)
+                    .lineLimit(1...6)
                     .textFieldStyle(.plain)
                     .focused($focused)
                     .onSubmit(ask)
@@ -197,8 +243,8 @@ private struct Composer: View {
                     .padding(.vertical, 7)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
-                if state.ai.isRunning {
-                    Button { state.ai.cancel() } label: {
+                if state.claude.isRunning {
+                    Button { state.claude.cancel() } label: {
                         Image(systemName: "stop.circle.fill").font(.title2)
                     }
                     .buttonStyle(.plain)
@@ -253,7 +299,7 @@ private struct Composer: View {
 
     private func ask() {
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canAsk, !state.ai.isRunning else { return }
+        guard canAsk, !state.claude.isRunning else { return }
         state.runAI(.ask(q), scope: state.panelScope)
         question = ""
     }

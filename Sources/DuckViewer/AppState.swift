@@ -64,18 +64,6 @@ enum PageLayout: String, CaseIterable, Identifiable {
     }
 }
 
-enum TerminalPosition: String, CaseIterable, Identifiable {
-    case right, bottom
-    var id: Self { self }
-
-    var label: String {
-        switch self {
-        case .right: "오른쪽 (AI 아래)"
-        case .bottom: "가운데 아래"
-        }
-    }
-}
-
 /// AI 패널의 범위 선택
 enum AIScopeKind: String, CaseIterable, Identifiable {
     case page, selection, range
@@ -87,28 +75,6 @@ enum AIScopeKind: String, CaseIterable, Identifiable {
         case .selection: "선택 영역"
         case .range: "페이지 범위"
         }
-    }
-}
-
-/// AI 실행 한 번의 결과 카드. `claude -p`는 상태가 없어서 대화가 아니라 독립된 결과로 다룬다.
-struct AITurn: Identifiable {
-    enum Status: Equatable { case running, finished(Int32), cancelled }
-
-    let id = UUID()
-    let title: String
-    let icon: String
-    let scopeLabel: String
-    /// 메모로 저장할 때 쓰는 페이지 (0부터)
-    let anchorPage: Int
-    let date = Date()
-    var output = ""
-    var error = ""
-    var status: Status = .running
-
-    var isRunning: Bool { status == .running }
-    var failed: Bool {
-        if case let .finished(code) = status { return code != 0 }
-        return false
     }
 }
 
@@ -151,8 +117,9 @@ final class AppState: ObservableObject {
         return view
     }()
 
-    let ai = AIRunner()
+    let claude = ClaudeRunner()
     let notes = NotesStore()
+    let chats = ChatStore()
 
     // 문서
     @Published private(set) var document: PDFDocument?
@@ -169,10 +136,6 @@ final class AppState: ObservableObject {
     @Published var sidebarTab: SidebarTab = .thumbnails
     @Published var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published var showInspector = true
-    @Published var showTerminal = true
-    @Published var terminalPosition = TerminalPosition(rawValue: UserDefaults.standard.string(forKey: "terminalPosition") ?? "") ?? .right {
-        didSet { UserDefaults.standard.set(terminalPosition.rawValue, forKey: "terminalPosition") }
-    }
     @Published var theme: ReadingTheme = .normal { didSet { applyTheme() } }
     @Published var pageLayout: PageLayout = .continuous { didSet { pdfView.displayMode = pageLayout.mode } }
 
@@ -182,7 +145,6 @@ final class AppState: ObservableObject {
     @Published private(set) var searchedQuery = ""
 
     // AI
-    @Published private(set) var turns: [AITurn] = []
     @Published private(set) var templates = PromptTemplates.load()
     @Published var aiScopeKind: AIScopeKind = .page
     @Published var rangeFrom = 1
@@ -220,7 +182,10 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
         // 하위 객체 변경을 뷰에 전달
-        ai.objectWillChange
+        claude.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        chats.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         notes.objectWillChange
@@ -228,7 +193,6 @@ final class AppState: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var terminalOnRight: Bool { showTerminal && terminalPosition == .right }
     var pageCount: Int { document?.pageCount ?? 0 }
     var title: String { fileURL?.deletingPathExtension().lastPathComponent ?? "DuckViewer" }
     var hasSelection: Bool { !selectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -266,7 +230,8 @@ final class AppState: ObservableObject {
         RecentFiles.add(url)
         notes.load(key: key, fileURL: url)
         notes.notes.forEach(addHighlightAnnotations)
-        TerminalController.shared.adoptDirectoryIfFresh(url.deletingLastPathComponent())
+        claude.cancel()
+        chats.load(key: key)
 
         // 레이아웃이 끝난 다음에 이동해야 적용된다.
         DispatchQueue.main.async { [weak self] in
@@ -474,50 +439,136 @@ final class AppState: ObservableObject {
         }
     }
 
+    var messages: [ChatMessage] { chats.log.messages }
+    var hasSession: Bool { chats.log.sessionID != nil }
+
+    /// 범위에 맞는 컨텍스트를 붙여 Claude 세션에 메시지를 보낸다.
     func runAI(_ request: AIRequest, scope: AIScope) {
-        guard document != nil else { return }
-        let body: String
+        guard document != nil, let fileURL, !claude.isRunning else { return }
         let anchor: Int
         let scopeLabel: String
+        var context: String?
+        var pages: ClosedRange<Int>?
         switch scope {
         case .currentPage:
-            body = text(pages: currentPageIndex...currentPageIndex)
             anchor = currentPageIndex
             scopeLabel = "p.\(currentPageIndex + 1)"
+            pages = currentPageIndex...currentPageIndex
         case .selection:
             guard hasSelection else { return }
-            body = "[p.\(currentPageIndex + 1) 선택 영역]\n\(selectionText)"
             anchor = currentPageIndex
             scopeLabel = "p.\(currentPageIndex + 1) 선택 영역"
+            context = selectionText
         case let .pages(from, to), let .chapter(_, from, to):
-            body = text(pages: (from - 1)...(to - 1))
             anchor = from - 1
             scopeLabel = scope.label
-        }
-        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            NSAlert.show("추출된 텍스트가 없습니다", "스캔본 PDF일 수 있습니다. (OCR은 아직 지원하지 않습니다)")
-            return
+            pages = (from - 1)...(to - 1)
         }
 
-        let turn = AITurn(title: request.title, icon: request.icon, scopeLabel: scopeLabel, anchorPage: anchor)
-        turns.append(turn)
+        // 텍스트가 너무 길거나 없으면(스캔본) Claude가 PDF를 직접 읽게 한다.
+        var readHint: String?
+        if let pages {
+            let extracted = text(pages: pages)
+            let label = pages.count == 1 ? "p.\(pages.lowerBound + 1)" : "p.\(pages.lowerBound + 1)–\(pages.upperBound + 1)"
+            if extracted.filter({ !$0.isWhitespace }).count < 20 * pages.count {
+                readHint = "\(label)는 텍스트가 거의 추출되지 않았다 (스캔본일 수 있음). Read 도구로 PDF의 해당 페이지를 직접 읽어라."
+            } else if extracted.count > 150_000 {
+                readHint = "\(label)는 너무 길어 텍스트를 붙이지 않았다. 필요한 부분을 Read 도구로 나눠 읽어라."
+            } else {
+                context = extracted
+            }
+        }
+
+        let user = ChatMessage(
+            role: .user,
+            text: {
+                if case let .ask(question) = request { return question }
+                return ""
+            }(),
+            title: {
+                if case let .template(template) = request { return template.name }
+                return nil
+            }(),
+            icon: request.icon,
+            scopeLabel: scopeLabel,
+            anchorPage: anchor
+        )
+        chats.append(user)
         showInspector = true
 
-        let prompt = PromptBuilder.build(request: request, scopeLabel: scope.label, title: title, body: body)
-        let id = turn.id
-        ai.run(
-            command: AISettings.command,
-            prompt: prompt,
-            variables: ["file": fileURL?.path ?? "", "page": "\(currentPageIndex + 1)"],
-            workingDirectory: fileURL?.deletingLastPathComponent(),
-            callbacks: AIRunner.Callbacks(
-                output: { [weak self] text in self?.updateTurn(id) { $0.output = text } },
-                error: { [weak self] text in self?.updateTurn(id) { $0.error = text } },
-                finish: { [weak self] code in
-                    self?.updateTurn(id) { $0.status = code.map { .finished($0) } ?? .cancelled }
-                }
-            )
+        let prompt = PromptBuilder.message(
+            request: request,
+            scopeLabel: scopeLabel,
+            currentPage: currentPageIndex + 1,
+            pageCount: pageCount,
+            context: context,
+            readHint: readHint
         )
+        send(prompt, anchor: anchor, scopeLabel: scopeLabel, fileURL: fileURL, retryWithNewSession: true)
+    }
+
+    private func send(_ prompt: String, anchor: Int, scopeLabel: String, fileURL: URL, retryWithNewSession: Bool) {
+        let reply = ChatMessage(role: .assistant, text: "", scopeLabel: scopeLabel, anchorPage: anchor, status: .running)
+        chats.append(reply)
+
+        // 세션은 처음 시작한 폴더에서만 이어갈 수 있다. 폴더가 사라졌으면 새로 시작한다.
+        let pdfDirectory = fileURL.deletingLastPathComponent()
+        var resume = false
+        var sessionID = UUID().uuidString.lowercased()
+        var directory = pdfDirectory
+        if let existing = chats.log.sessionID, let path = chats.log.workingDirectory,
+           FileManager.default.fileExists(atPath: path) {
+            resume = true
+            sessionID = existing
+            directory = URL(fileURLWithPath: path)
+        } else {
+            chats.startSession(sessionID, in: pdfDirectory)
+            writeContext()
+        }
+
+        let request = ClaudeRunner.Request(
+            prompt: prompt,
+            sessionID: sessionID,
+            resume: resume,
+            systemPrompt: PromptBuilder.system(
+                title: title, path: fileURL.path, pageCount: pageCount, allowWrite: ClaudeSettings.allowWrite
+            ),
+            model: ClaudeSettings.model,
+            allowWrite: ClaudeSettings.allowWrite,
+            workingDirectory: directory
+        )
+        let id = reply.id
+        claude.run(request) { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case let .text(text):
+                self.chats.update(id) { $0.text = text }
+            case let .activity(activity):
+                self.chats.update(id) { $0.activity = activity }
+            case let .finished(outcome):
+                // Claude 쪽 세션 파일이 사라졌으면 새 세션으로 한 번 다시 보낸다.
+                if resume, retryWithNewSession, !outcome.success, !outcome.cancelled,
+                   (outcome.error ?? "").localizedCaseInsensitiveContains("no conversation found") {
+                    self.chats.remove(id)
+                    self.chats.reset(keepingMessages: true)
+                    self.send(prompt, anchor: anchor, scopeLabel: scopeLabel, fileURL: fileURL, retryWithNewSession: false)
+                    return
+                }
+                self.chats.update(id, persist: true) {
+                    $0.activity = nil
+                    $0.costUSD = outcome.costUSD
+                    $0.durationMs = outcome.durationMs
+                    if outcome.cancelled {
+                        $0.status = .cancelled
+                    } else if outcome.success {
+                        $0.status = .done
+                    } else {
+                        $0.status = .failed
+                        $0.error = outcome.error
+                    }
+                }
+            }
+        }
     }
 
     /// 메뉴 단축키용: 템플릿 순서로 실행
@@ -526,25 +577,40 @@ final class AppState: ObservableObject {
         runAI(.template(templates[index]), scope: scope)
     }
 
-    private func updateTurn(_ id: UUID, _ change: (inout AITurn) -> Void) {
-        guard let index = turns.firstIndex(where: { $0.id == id }) else { return }
-        change(&turns[index])
+    /// 대화 기록과 세션을 버리고 새로 시작한다.
+    func newConversation() {
+        guard !messages.isEmpty || hasSession else { return }
+        let alert = NSAlert()
+        alert.messageText = "새 대화를 시작할까요?"
+        alert.informativeText = "이 문서의 대화 기록이 지워집니다. Claude 쪽 세션은 남아 있어서 터미널에서 이어하기 명령으로 열 수 있습니다."
+        alert.addButton(withTitle: "새 대화")
+        alert.addButton(withTitle: "취소")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        claude.cancel()
+        chats.reset()
+        writeContext()
     }
 
-    func clearTurns() {
-        ai.cancel()
-        turns.removeAll()
+    /// 바깥 터미널에서 같은 대화를 이어가는 명령
+    var resumeCommand: String? {
+        guard let id = chats.log.sessionID, let directory = chats.log.workingDirectory else { return nil }
+        let quoted = "'" + directory.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "cd \(quoted) && claude --resume \(id)"
     }
 
-    func removeTurn(_ turn: AITurn) {
-        if turn.isRunning { ai.cancel() }
-        turns.removeAll { $0.id == turn.id }
+    func copyResumeCommand() {
+        guard let command = resumeCommand else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
     }
 
-    func saveAsNote(_ turn: AITurn) {
-        let text = turn.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    func saveAsNote(_ message: ChatMessage) {
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        notes.add(Note(page: turn.anchorPage, text: text, quote: nil, source: "\(turn.title) · \(turn.scopeLabel)"))
+        let request = messages.last { $0.role == .user && $0.createdAt <= message.createdAt }
+        let source = [request?.title ?? request?.text.prefix(30).description, message.scopeLabel]
+            .compactMap { $0 }.joined(separator: " · ")
+        notes.add(Note(page: message.anchorPage ?? currentPageIndex, text: text, quote: nil, source: "Claude · \(source)"))
     }
 
     // MARK: - 메모와 하이라이트
@@ -663,14 +729,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - 터미널
-
-    func sendSelectionToTerminal() {
-        guard hasSelection else { return }
-        showTerminal = true
-        TerminalController.shared.type(selectionText)
-    }
-
     // MARK: - 컨텍스트 파일
 
     private func writeContext() {
@@ -679,7 +737,8 @@ final class AppState: ObservableObject {
             page: currentPageIndex,
             pageCount: pageCount,
             selection: selectionText,
-            pageText: document?.page(at: currentPageIndex)?.string ?? ""
+            pageText: document?.page(at: currentPageIndex)?.string ?? "",
+            claudeSession: chats.log.sessionID
         )
     }
 }
@@ -697,14 +756,14 @@ extension AppState {
             search()
         }
         if defaults.bool(forKey: "DVFakeAI") {
-            var turn = AITurn(title: "요약", icon: "text.alignleft", scopeLabel: "p.1", anchorPage: 0)
-            turn.output = "**개요**: 오리는 물새다 (p.1).\n\n- 첫째 요점: AI CLI로 요약할 수 있다 (p.1)\n- 둘째 요점: 범위는 p.2–3에 걸쳐 있다\n\n## 결론\n`claude -p` 같은 명령어를 쓴다."
-            turn.status = .finished(0)
-            turns.append(turn)
-            var failed = AITurn(title: "질문: 실패 예시", icon: "bubble.left", scopeLabel: "p.2 선택 영역", anchorPage: 1)
-            failed.error = "zsh:1: command not found: nonexistent-ai"
-            failed.status = .finished(127)
-            turns.append(failed)
+            chats.append(ChatMessage(role: .user, text: "", title: "요약", icon: "text.alignleft", scopeLabel: "p.1", anchorPage: 0))
+            chats.append(ChatMessage(
+                role: .assistant,
+                text: "**개요**: 오리는 물새다 (p.1).\n\n- 첫째 요점: AI CLI로 요약할 수 있다 (p.1)\n- 둘째 요점: 범위는 p.2–3에 걸쳐 있다\n\n## 결론\n`claude -p` 같은 명령어를 쓴다.",
+                scopeLabel: "p.1", anchorPage: 0, status: .done, costUSD: 0.0412, durationMs: 5300
+            ))
+            chats.append(ChatMessage(role: .user, text: "두 번째 요점을 더 자세히 설명해줘", icon: "bubble.left", scopeLabel: "p.1", anchorPage: 0))
+            chats.append(ChatMessage(role: .assistant, text: "AI CLI는 터미널에서", scopeLabel: "p.1", anchorPage: 0, status: .running, activity: "PDF p.2 읽는 중…"))
         }
         if let title = defaults.string(forKey: "DVChapter"), let template = templates.first {
             func find(_ items: [OutlineItem]) -> OutlineItem? {
@@ -717,6 +776,16 @@ extension AppState {
             if let item = find(outline) {
                 let range = pageRange(of: item)
                 runAI(.template(template), scope: .chapter(item.title, range.lowerBound, range.upperBound))
+            }
+        }
+        if let question = defaults.string(forKey: "DVAsk") {
+            // 앞의 요청이 끝난 뒤에 이어서 묻는다 (세션 이어가기 확인용)
+            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+                MainActor.assumeIsolated {
+                    guard let self, !self.claude.isRunning else { return }
+                    timer.invalidate()
+                    self.runAI(.ask(question), scope: .currentPage)
+                }
             }
         }
         guard let spec = defaults.string(forKey: "DVSelect"), let colon = spec.firstIndex(of: ":"),
