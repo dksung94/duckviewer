@@ -14,7 +14,7 @@ struct DuckViewerApp: App {
     var body: some Scene {
         // 파일과 함께 실행돼도 창이 뜨도록 WindowGroup을 쓰고, 외부 열기 요청은 기존 창이 받는다.
         WindowGroup("DuckViewer") {
-            ContentView()
+            MainView()
                 .environmentObject(state)
                 .frame(minWidth: 900, minHeight: 600)
                 .onOpenURL { url in
@@ -22,26 +22,73 @@ struct DuckViewerApp: App {
                 }
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
+        .defaultSize(width: 1320, height: 840)
         .handlesExternalEvents(matching: ["*"])
         .commands {
+            SidebarCommands()
             CommandGroup(replacing: .newItem) {
                 Button("열기…") { state.presentOpenPanel() }
                     .keyboardShortcut("o")
             }
+            CommandGroup(after: .importExport) {
+                Button("메모를 Markdown으로 내보내기…") { state.exportNotesMarkdown() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(state.notes.notes.isEmpty)
+            }
+            CommandMenu("메모") {
+                Button("하이라이트") { state.highlightSelection() }
+                    .keyboardShortcut("h", modifiers: [.command, .shift])
+                    .disabled(!state.hasSelection)
+                Button("메모 추가…") { state.beginNote() }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                    .disabled(state.document == nil)
+                Divider()
+                Button("메모 목록 보기") {
+                    state.sidebarTab = .notes
+                    state.sidebarVisibility = .all
+                }
+            }
             CommandMenu("AI") {
-                Button("현재 페이지 요약") { state.runAI(.summarize, scope: .currentPage) }
-                    .keyboardShortcut("1", modifiers: [.command, .shift])
-                Button("선택 영역 요약") { state.runAI(.summarize, scope: .selection) }
-                    .keyboardShortcut("2", modifiers: [.command, .shift])
+                if let first = state.templates.first {
+                    Button("\(first.name) – 현재 페이지") { state.runTemplate(at: 0, scope: .currentPage) }
+                        .keyboardShortcut("1", modifiers: [.command, .shift])
+                    Button("\(first.name) – 선택 영역") { state.runTemplate(at: 0, scope: .selection) }
+                        .keyboardShortcut("2", modifiers: [.command, .shift])
+                        .disabled(!state.hasSelection)
+                }
+                Menu("현재 페이지") {
+                    ForEach(state.templates) { template in
+                        Button(template.name) { state.runAI(.template(template), scope: .currentPage) }
+                    }
+                }
+                Menu("선택 영역") {
+                    ForEach(state.templates) { template in
+                        Button(template.name) { state.runAI(.template(template), scope: .selection) }
+                    }
+                }
+                .disabled(!state.hasSelection)
                 Divider()
                 Button("AI 중단") { state.ai.cancel() }
                     .keyboardShortcut(".", modifiers: .command)
+                    .disabled(!state.ai.isRunning)
+                Button("결과 모두 지우기") { state.clearTurns() }
             }
-            CommandMenu("보기") {
+            CommandGroup(before: .sidebar) {
+                Button(state.showInspector ? "AI 패널 숨기기" : "AI 패널 보기") { state.showInspector.toggle() }
+                    .keyboardShortcut("0", modifiers: [.command, .option])
                 Button(state.showTerminal ? "터미널 숨기기" : "터미널 보기") { state.showTerminal.toggle() }
                     .keyboardShortcut("`", modifiers: .control)
-                Button(state.showSidePanel ? "사이드 패널 숨기기" : "사이드 패널 보기") { state.showSidePanel.toggle() }
-                    .keyboardShortcut("0", modifiers: [.command, .option])
+                Divider()
+                Button("확대") { state.zoomIn() }
+                    .keyboardShortcut("+")
+                Button("축소") { state.zoomOut() }
+                    .keyboardShortcut("-")
+                Button("화면에 맞추기") { state.zoomToFit() }
+                    .keyboardShortcut("0")
+                Picker("읽기 테마", selection: $state.theme) {
+                    ForEach(ReadingTheme.allCases) { Text($0.label).tag($0) }
+                }
+                Divider()
             }
         }
 

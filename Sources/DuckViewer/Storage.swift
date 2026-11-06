@@ -46,6 +46,24 @@ enum ReadingPosition {
     }
 }
 
+/// 시작 화면의 최근 문서. 문서 기반 앱이 아니라서 NSDocumentController 목록 대신 직접 관리한다.
+enum RecentFiles {
+    private static let key = "recentFiles"
+
+    static func load() -> [URL] {
+        (UserDefaults.standard.stringArray(forKey: key) ?? [])
+            .filter { FileManager.default.fileExists(atPath: $0) }
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    static func add(_ url: URL) {
+        var paths = UserDefaults.standard.stringArray(forKey: key) ?? []
+        paths.removeAll { $0 == url.path }
+        paths.insert(url.path, at: 0)
+        UserDefaults.standard.set(Array(paths.prefix(10)), forKey: key)
+    }
+}
+
 enum ReadingContext {
     private struct Payload: Encodable {
         let file: String?
@@ -74,6 +92,27 @@ enum ReadingContext {
     }
 }
 
+/// 하이라이트 한 덩어리. 선택이 여러 페이지에 걸칠 수 있어서 페이지마다 따로 둔다.
+struct HighlightRegion: Codable, Equatable {
+    /// 0부터 시작하는 페이지 인덱스
+    var page: Int
+    /// PDF 페이지 좌표의 사각형들 [x, y, width, height] (줄 단위)
+    var rects: [[Double]]
+}
+
+enum NoteColor: String, Codable, CaseIterable {
+    case yellow, green, blue, pink
+
+    var label: String {
+        switch self {
+        case .yellow: "노랑"
+        case .green: "초록"
+        case .blue: "파랑"
+        case .pink: "분홍"
+        }
+    }
+}
+
 struct Note: Codable, Identifiable, Equatable {
     var id = UUID()
     /// 0부터 시작하는 페이지 인덱스
@@ -82,6 +121,11 @@ struct Note: Codable, Identifiable, Equatable {
     var quote: String?
     var source: String?
     var createdAt = Date()
+    // 아래부터는 v0.2에서 추가. 이전 파일과 호환되도록 모두 Optional로 둔다.
+    var highlights: [HighlightRegion]?
+    var color: NoteColor?
+
+    var isHighlight: Bool { !(highlights?.isEmpty ?? true) }
 }
 
 @MainActor
@@ -99,11 +143,15 @@ final class NotesStore: ObservableObject {
         self.key = key
         self.fileURL = fileURL
         notes = []
-        guard let path = storagePath,
-              let data = try? Data(contentsOf: path),
-              let file = try? decoder.decode(File.self, from: data)
-        else { return }
-        notes = file.notes
+        guard let path = storagePath, let data = try? Data(contentsOf: path) else { return }
+        do {
+            notes = try decoder.decode(File.self, from: data).notes
+        } catch {
+            // 형식이 맞지 않아도 다음 저장에서 덮어쓰지 않도록 백업해 둔다.
+            let backup = path.appendingPathExtension("bak-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: path, to: backup)
+            NSLog("DuckViewer: 메모 파일을 읽지 못해 \(backup.path) 로 옮겼습니다: \(error)")
+        }
     }
 
     func add(_ note: Note) {
@@ -124,6 +172,29 @@ final class NotesStore: ObservableObject {
 
     var sorted: [Note] {
         notes.sorted { ($0.page, $0.createdAt) < ($1.page, $1.createdAt) }
+    }
+
+    /// Obsidian 등에서 바로 쓸 수 있는 Markdown
+    func markdown(title: String) -> String {
+        var lines = ["# \(title)", ""]
+        if let fileURL { lines += ["- 파일: `\(fileURL.path)`", "- 내보낸 날짜: \(Date().formatted(date: .abbreviated, time: .shortened))", ""] }
+        var lastPage = -1
+        for note in sorted {
+            if note.page != lastPage {
+                lines += ["## p.\(note.page + 1)", ""]
+                lastPage = note.page
+            }
+            if let quote = note.quote, !quote.isEmpty {
+                lines += quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
+                lines.append("")
+            }
+            let text = note.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                if let source = note.source { lines.append("*AI · \(source)*") }
+                lines += [text, ""]
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     private var storagePath: URL? {

@@ -1,17 +1,75 @@
 import Foundation
 
-enum AIAction: Equatable {
-    case summarize
-    case explain
-    case translate
+/// AI 패널의 빠른 실행 버튼. 설정에서 편집할 수 있다.
+struct PromptTemplate: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    /// SF Symbol 이름
+    var icon: String
+    /// `{language}`는 응답 언어로 바뀐다.
+    var instruction: String
+}
+
+enum PromptTemplates {
+    static let key = "promptTemplates"
+
+    static let defaults: [PromptTemplate] = [
+        PromptTemplate(
+            id: UUID(uuidString: "6E1E3C2A-0000-4000-8000-000000000001")!,
+            name: "요약", icon: "text.alignleft",
+            instruction: "핵심 위주로 요약해줘. 한두 문장 개요 뒤에 bullet로 핵심 포인트를 정리해."
+        ),
+        PromptTemplate(
+            id: UUID(uuidString: "6E1E3C2A-0000-4000-8000-000000000002")!,
+            name: "쉽게 설명", icon: "lightbulb",
+            instruction: "처음 읽는 사람도 이해할 수 있게 쉽게 설명해줘. 어려운 용어는 풀어서 설명하고 예시를 들어."
+        ),
+        PromptTemplate(
+            id: UUID(uuidString: "6E1E3C2A-0000-4000-8000-000000000003")!,
+            name: "번역", icon: "character.book.closed",
+            instruction: "{language}로 자연스럽게 번역해줘. 번역문만 출력해."
+        ),
+        PromptTemplate(
+            id: UUID(uuidString: "6E1E3C2A-0000-4000-8000-000000000004")!,
+            name: "핵심 용어", icon: "list.bullet.rectangle",
+            instruction: "중요한 용어와 개념을 뽑아서 각각 한 줄로 정의해줘."
+        ),
+        PromptTemplate(
+            id: UUID(uuidString: "6E1E3C2A-0000-4000-8000-000000000005")!,
+            name: "퀴즈", icon: "questionmark.bubble",
+            instruction: "이해도를 확인할 수 있는 질문 3개를 만들고, 각 질문 아래에 답과 근거 페이지를 적어줘."
+        ),
+    ]
+
+    static func load() -> [PromptTemplate] {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let templates = try? JSONDecoder().decode([PromptTemplate].self, from: data),
+              !templates.isEmpty
+        else { return defaults }
+        return templates
+    }
+
+    static func save(_ templates: [PromptTemplate]) {
+        guard let data = try? JSONEncoder().encode(templates) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+}
+
+enum AIRequest: Equatable {
+    case template(PromptTemplate)
     case ask(String)
 
-    var label: String {
+    var title: String {
         switch self {
-        case .summarize: "요약"
-        case .explain: "설명"
-        case .translate: "번역"
-        case .ask: "질문"
+        case let .template(template): template.name
+        case let .ask(question): question
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case let .template(template): template.icon
+        case .ask: "bubble.left"
         }
     }
 }
@@ -21,12 +79,14 @@ enum AIScope: Equatable {
     case selection
     /// 1부터 시작하는 페이지 번호 (양 끝 포함)
     case pages(Int, Int)
+    case chapter(String, Int, Int)
 
     var label: String {
         switch self {
         case .currentPage: "현재 페이지"
         case .selection: "선택 영역"
-        case let .pages(from, to): "p.\(from)–\(to)"
+        case let .pages(from, to): from == to ? "p.\(from)" : "p.\(from)–\(to)"
+        case let .chapter(title, from, to): "\(title) (p.\(from)–\(to))"
         }
     }
 }
@@ -49,22 +109,19 @@ enum AISettings {
 }
 
 enum PromptBuilder {
-    static func build(action: AIAction, scope: AIScope, title: String, body: String) -> String {
+    static func build(request: AIRequest, scopeLabel: String, title: String, body: String) -> String {
+        let language = AISettings.language
         let task: String
-        switch action {
-        case .summarize:
-            task = "아래 내용을 핵심 위주로 요약해줘. 짧은 개요 한두 문장 뒤에 bullet로 핵심 포인트를 정리해."
-        case .explain:
-            task = "아래 내용을 처음 읽는 사람도 이해할 수 있게 쉽게 설명해줘. 어려운 용어는 풀어서 설명해."
-        case .translate:
-            task = "아래 내용을 \(AISettings.language)로 자연스럽게 번역해줘. 번역문만 출력해."
+        switch request {
+        case let .template(template):
+            task = "아래 내용을 " + template.instruction.replacingOccurrences(of: "{language}", with: language)
         case let .ask(question):
             task = "아래 내용을 바탕으로 다음 질문에 답해줘.\n질문: \(question)"
         }
         return """
-        너는 PDF 독서를 돕는 어시스턴트다. 문서 제목: "\(title)", 범위: \(scope.label).
+        너는 PDF 독서를 돕는 어시스턴트다. 문서 제목: "\(title)", 범위: \(scopeLabel).
         \(task)
-        - 응답 언어: \(AISettings.language)
+        - 응답 언어: \(language)
         - 내용의 근거가 되는 페이지는 (p.N) 형식으로 표시해.
         - 도구를 쓰거나 파일을 읽지 말고 아래 텍스트만 사용해.
 
@@ -114,27 +171,28 @@ enum ShellEnvironment {
 }
 
 /// 사용자가 설정한 CLI 명령어를 셸 환경(`ShellEnvironment`)에서 실행하고, 프롬프트는 stdin으로 넘긴다.
+/// 한 번에 하나만 실행한다. 출력은 콜백으로 누적된 전체 문자열을 넘긴다.
 @MainActor
 final class AIRunner: ObservableObject {
-    @Published private(set) var output = ""
-    @Published private(set) var errorOutput = ""
+    struct Callbacks {
+        var output: (String) -> Void
+        var error: (String) -> Void
+        /// 정상 종료면 종료 코드, 중단이면 nil
+        var finish: (Int32?) -> Void
+    }
+
     @Published private(set) var isRunning = false
-    @Published private(set) var lastLabel = ""
-    @Published private(set) var exitStatus: Int32?
 
     private var process: Process?
+    private var callbacks: Callbacks?
     // 한글(3바이트)이 청크 경계에서 잘려도 깨지지 않도록 바이트를 모아 두고 전체를 다시 디코딩한다.
     private var outBuffer = Data()
     private var errBuffer = Data()
 
-    func run(command: String, prompt: String, label: String, variables: [String: String], workingDirectory: URL?) {
+    func run(command: String, prompt: String, variables: [String: String], workingDirectory: URL?, callbacks: Callbacks) {
         cancel()
-        output = ""
-        errorOutput = ""
         outBuffer = Data()
         errBuffer = Data()
-        exitStatus = nil
-        lastLabel = label
 
         var resolved = command
         for (key, value) in variables {
@@ -181,10 +239,12 @@ final class AIRunner: ObservableObject {
         do {
             try process.run()
         } catch {
-            errorOutput = "실행 실패: \(error.localizedDescription)"
+            callbacks.error("실행 실패: \(error.localizedDescription)")
+            callbacks.finish(-1)
             return
         }
         self.process = process
+        self.callbacks = callbacks
         isRunning = true
 
         // 큰 프롬프트가 파이프 버퍼를 막지 않도록 백그라운드에서 쓴다.
@@ -197,29 +257,33 @@ final class AIRunner: ObservableObject {
 
     func cancel() {
         guard let process, process.isRunning else { return }
+        let callbacks = self.callbacks
         process.terminate()
         self.process = nil
+        self.callbacks = nil
         isRunning = false
-        errorOutput += "\n(중단됨)"
+        callbacks?.finish(nil)
     }
 
     private func receive(_ data: Data, from source: Process) {
         guard process === source, !data.isEmpty else { return }
         outBuffer.append(data)
-        output = String(decoding: outBuffer, as: UTF8.self)
+        callbacks?.output(String(decoding: outBuffer, as: UTF8.self))
     }
 
     private func receive(error data: Data, from source: Process) {
         guard process === source, !data.isEmpty else { return }
         errBuffer.append(data)
-        errorOutput = String(decoding: errBuffer, as: UTF8.self)
+        callbacks?.error(String(decoding: errBuffer, as: UTF8.self))
     }
 
     private func finish(_ source: Process, status: Int32) {
         guard process === source else { return }
-        exitStatus = status
-        isRunning = false
+        let callbacks = self.callbacks
         process = nil
+        self.callbacks = nil
+        isRunning = false
+        callbacks?.finish(status)
     }
 
     private func shellQuote(_ value: String) -> String {
