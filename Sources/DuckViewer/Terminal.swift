@@ -82,12 +82,18 @@ struct TerminalPanel: View {
             HStack(spacing: 8) {
                 Image(systemName: "terminal")
                 Text("터미널").font(.caption.weight(.semibold))
-                Text("$DUCKVIEWER_CONTEXT 에 현재 읽기 상태가 있습니다")
-                    .font(.caption)
+                Text("$DUCKVIEWER_CONTEXT")
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
-                Spacer()
-                Button("선택 텍스트 보내기") { terminal.type(state.selectionText) }
-                    .disabled(!state.hasSelection)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help("현재 파일, 페이지, 선택 텍스트가 담긴 JSON 경로 (\(AppPaths.context.path))")
+                Spacer(minLength: 4)
+                Button { terminal.type(state.selectionText) } label: {
+                    Image(systemName: "text.insert")
+                }
+                .disabled(!state.hasSelection)
+                .help("선택 텍스트를 터미널에 입력")
                 Button {
                     terminal.restart(in: state.fileURL?.deletingLastPathComponent())
                 } label: {

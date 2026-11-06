@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 왼쪽 사이드바 | 가운데 PDF + 터미널 | 오른쪽 AI 인스펙터
+/// 왼쪽 사이드바 | 가운데 PDF | 오른쪽 AI + 터미널 (터미널은 가운데 아래로도 옮길 수 있다)
 struct MainView: View {
     @EnvironmentObject private var state: AppState
     @AppStorage("terminalHeight") private var terminalHeight = 220.0
@@ -16,18 +16,18 @@ struct MainView: View {
                 VStack(spacing: 0) {
                     ReaderArea()
                         .frame(maxHeight: .infinity)
-                    if state.showTerminal {
+                    if state.showTerminal && state.terminalPosition == .bottom {
                         // VSplitView는 처음에 반반으로 나눠서, 높이를 기억하는 분할 바를 직접 둔다.
-                        let height = min(max(terminalHeight, 110), max(110, geometry.size.height - 200))
-                        SplitHandle(height: $terminalHeight, limit: 110...max(110, geometry.size.height - 200))
+                        let limit = 110.0...max(110.0, Double(geometry.size.height) - 200)
+                        SplitHandle(height: $terminalHeight, limit: limit)
                         TerminalPanel()
-                            .frame(height: height)
+                            .frame(height: min(max(terminalHeight, limit.lowerBound), limit.upperBound))
                     }
                 }
             }
-            .inspector(isPresented: $state.showInspector) {
-                AIPanel()
-                    .inspectorColumnWidth(min: 300, ideal: 380, max: 640)
+            .inspector(isPresented: rightPanelPresented) {
+                RightPanel()
+                    .inspectorColumnWidth(min: 320, ideal: state.terminalOnRight ? 440 : 380, max: 720)
             }
         }
         .navigationTitle(state.title)
@@ -51,6 +51,19 @@ struct MainView: View {
         }
     }
 
+    /// 오른쪽 패널은 AI나 (오른쪽 배치일 때) 터미널 중 하나라도 켜져 있으면 보인다.
+    private var rightPanelPresented: Binding<Bool> {
+        Binding(
+            get: { state.showInspector || state.terminalOnRight },
+            set: { shown in
+                if !shown {
+                    state.showInspector = false
+                    if state.terminalPosition == .right { state.showTerminal = false }
+                }
+            }
+        )
+    }
+
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
@@ -69,6 +82,13 @@ struct MainView: View {
                 Section("페이지 배치") {
                     Picker("페이지 배치", selection: $state.pageLayout) {
                         ForEach(PageLayout.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                }
+                Section("터미널 위치") {
+                    Picker("터미널 위치", selection: $state.terminalPosition) {
+                        ForEach(TerminalPosition.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.inline)
                     .labelsHidden()
@@ -156,5 +176,30 @@ private struct SplitHandle: View {
                     )
             }
             .zIndex(1)
+    }
+}
+
+/// 오른쪽 패널: 위는 AI, 아래는 터미널 (터미널이 오른쪽 배치일 때)
+private struct RightPanel: View {
+    @EnvironmentObject private var state: AppState
+    @AppStorage("rightTerminalHeight") private var terminalHeight = 320.0
+
+    var body: some View {
+        if state.terminalOnRight && state.showInspector {
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    AIPanel()
+                        .frame(maxHeight: .infinity)
+                    let limit = 120.0...max(120.0, Double(geometry.size.height) - 220)
+                    SplitHandle(height: $terminalHeight, limit: limit)
+                    TerminalPanel()
+                        .frame(height: min(max(terminalHeight, limit.lowerBound), limit.upperBound))
+                }
+            }
+        } else if state.terminalOnRight {
+            TerminalPanel()
+        } else {
+            AIPanel()
+        }
     }
 }

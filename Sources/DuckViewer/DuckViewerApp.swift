@@ -85,6 +85,9 @@ struct DuckViewerApp: App {
                     .keyboardShortcut("-")
                 Button("화면에 맞추기") { state.zoomToFit() }
                     .keyboardShortcut("0")
+                Picker("터미널 위치", selection: $state.terminalPosition) {
+                    ForEach(TerminalPosition.allCases) { Text($0.label).tag($0) }
+                }
                 Picker("읽기 테마", selection: $state.theme) {
                     ForEach(ReadingTheme.allCases) { Text($0.label).tag($0) }
                 }

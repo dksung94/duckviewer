@@ -64,6 +64,18 @@ enum PageLayout: String, CaseIterable, Identifiable {
     }
 }
 
+enum TerminalPosition: String, CaseIterable, Identifiable {
+    case right, bottom
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .right: "오른쪽 (AI 아래)"
+        case .bottom: "가운데 아래"
+        }
+    }
+}
+
 /// AI 패널의 범위 선택
 enum AIScopeKind: String, CaseIterable, Identifiable {
     case page, selection, range
@@ -158,6 +170,9 @@ final class AppState: ObservableObject {
     @Published var sidebarVisibility: NavigationSplitViewVisibility = .all
     @Published var showInspector = true
     @Published var showTerminal = true
+    @Published var terminalPosition = TerminalPosition(rawValue: UserDefaults.standard.string(forKey: "terminalPosition") ?? "") ?? .right {
+        didSet { UserDefaults.standard.set(terminalPosition.rawValue, forKey: "terminalPosition") }
+    }
     @Published var theme: ReadingTheme = .normal { didSet { applyTheme() } }
     @Published var pageLayout: PageLayout = .continuous { didSet { pdfView.displayMode = pageLayout.mode } }
 
@@ -213,6 +228,7 @@ final class AppState: ObservableObject {
             .store(in: &cancellables)
     }
 
+    var terminalOnRight: Bool { showTerminal && terminalPosition == .right }
     var pageCount: Int { document?.pageCount ?? 0 }
     var title: String { fileURL?.deletingPathExtension().lastPathComponent ?? "DuckViewer" }
     var hasSelection: Bool { !selectionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
