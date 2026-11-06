@@ -76,6 +76,7 @@ open -n build/DuckViewer.app --args book.pdf \
 
 | 인자 | 동작 |
 |---|---|
+| `-DVDataDir 경로` | 메모·대화 기록·컨텍스트 파일을 이 폴더에 저장 (실제 데이터를 건드리지 않도록 테스트할 때 항상 사용) |
 | `-DVSidebar thumbnails\|outline\|notes\|search` | 사이드바 탭 |
 | `-DVSelect "페이지:텍스트"` | 해당 페이지의 텍스트를 찾아 선택 (선택 액션 바 표시) |
 | `-DVHighlight YES` | 선택 영역 하이라이트 |

@@ -3,6 +3,12 @@ import Foundation
 
 enum AppPaths {
     static var support: URL {
+        #if DEBUG
+        // 테스트가 실제 메모와 대화 기록을 건드리지 않도록 다른 폴더를 쓸 수 있다: -DVDataDir <경로>
+        if let dir = UserDefaults.standard.string(forKey: "DVDataDir") {
+            return URL(fileURLWithPath: dir, isDirectory: true)
+        }
+        #endif
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("DuckViewer", isDirectory: true)
     }
@@ -12,7 +18,12 @@ enum AppPaths {
 
     /// 터미널 속 AI 에이전트가 읽는 현재 읽기 상태
     static var context: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        #if DEBUG
+        if UserDefaults.standard.string(forKey: "DVDataDir") != nil {
+            return support.appendingPathComponent("context.json")
+        }
+        #endif
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".duckviewer", isDirectory: true)
             .appendingPathComponent("context.json")
     }
