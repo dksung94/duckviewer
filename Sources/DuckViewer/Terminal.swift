@@ -8,6 +8,8 @@ final class TerminalController: NSObject, ObservableObject, LocalProcessTerminal
     static let shared = TerminalController()
 
     @Published private(set) var isAlive = false
+    private var startedAt = Date.distantPast
+    private var startedDirectory: URL?
     private(set) lazy var view: LocalProcessTerminalView = {
         let view = LocalProcessTerminalView(frame: .zero)
         view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -32,6 +34,18 @@ final class TerminalController: NSObject, ObservableObject, LocalProcessTerminal
             currentDirectory: dir
         )
         isAlive = true
+        startedAt = Date()
+        startedDirectory = directory
+    }
+
+    /// 앱이 파일과 함께 실행되면 셸이 문서보다 먼저 홈 폴더에서 뜰 수 있다.
+    /// 방금 문서 없이 시작한 셸이면 PDF 폴더로 옮긴다. 사용 중인 세션은 건드리지 않는다.
+    func adoptDirectoryIfFresh(_ directory: URL) {
+        guard isAlive, startedDirectory == nil, Date().timeIntervalSince(startedAt) < 3 else { return }
+        startedDirectory = directory
+        let quoted = "'" + directory.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        // 앞의 공백은 셸 히스토리에 남기지 않기 위함
+        view.send(txt: " cd \(quoted) && clear\n")
     }
 
     func restart(in directory: URL?) {
@@ -52,7 +66,10 @@ final class TerminalController: NSObject, ObservableObject, LocalProcessTerminal
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
-        Task { @MainActor in self.isAlive = false }
+        // 다시 시작할 때 이전 셸의 종료 알림이 늦게 올 수 있으므로 현재 프로세스 상태로 판단한다.
+        Task { @MainActor in
+            if !self.view.process.running { self.isAlive = false }
+        }
     }
 }
 
@@ -85,7 +102,12 @@ struct TerminalPanel: View {
             .background(.bar)
             Divider()
             TerminalHost(controller: terminal)
-                .onAppear { terminal.startIfNeeded(in: state.fileURL?.deletingLastPathComponent()) }
+                .onAppear {
+                    // 파일과 함께 실행될 때 문서가 먼저 열리도록 잠깐 기다렸다가 셸을 띄운다.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        terminal.startIfNeeded(in: state.fileURL?.deletingLastPathComponent())
+                    }
+                }
         }
     }
 }

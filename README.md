@@ -6,7 +6,7 @@ AI랑 같이 읽는 macOS PDF 뷰어. 사용자가 지정한 AI CLI(기본값 `c
 
 ## 빌드와 실행
 
-macOS 14 이상, Swift 5.10 이상(Command Line Tools만 있어도 된다).
+macOS 14 이상, Swift 6.0 이상(Command Line Tools만 있어도 된다. SwiftTerm 1.20.0이 Swift 6.0을 요구한다).
 
 ```sh
 scripts/bundle.sh            # build/DuckViewer.app 생성 (release)

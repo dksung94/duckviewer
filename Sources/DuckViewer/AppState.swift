@@ -28,6 +28,7 @@ final class AppState: ObservableObject {
     @Published var showSidePanel = true
 
     private var documentKey: String?
+    private var isLoadingDocument = false
     private var cancellables: Set<AnyCancellable> = []
 
     private init() {
@@ -66,20 +67,28 @@ final class AppState: ObservableObject {
             NSAlert.show("PDF를 열 수 없습니다", url.path)
             return
         }
+        // 문서를 바꾸는 동안 PDFView가 보내는 페이지 변경 알림이 읽은 위치를 덮어쓰지 않게 막는다.
+        let key = DocumentKey.make(for: url)
+        let saved = ReadingPosition.load(key: key)
+        isLoadingDocument = true
+        documentKey = key
         document = doc
         fileURL = url
         selectionText = ""
         pdfView.document = doc
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        notes.load(key: key, fileURL: url)
+        TerminalController.shared.adoptDirectoryIfFresh(url.deletingLastPathComponent())
 
-        documentKey = DocumentKey.make(for: url)
-        notes.load(key: documentKey, fileURL: url)
-
-        let saved = ReadingPosition.load(key: documentKey)
-        if saved > 0, saved < doc.pageCount, let page = doc.page(at: saved) {
-            pdfView.go(to: page)
+        // 레이아웃이 끝난 다음에 이동해야 적용된다.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.document === doc else { return }
+            // 이전 문서의 스크롤 위치가 남지 않도록 항상 목표 페이지로 이동한다.
+            let target = (0..<doc.pageCount).contains(saved) ? saved : 0
+            if let page = doc.page(at: target) { self.pdfView.go(to: page) }
+            self.isLoadingDocument = false
+            self.pageDidChange()
         }
-        pageDidChange()
     }
 
     func goToPage(_ index: Int) {
@@ -88,7 +97,7 @@ final class AppState: ObservableObject {
     }
 
     private func pageDidChange() {
-        guard let doc = document, let page = pdfView.currentPage else { return }
+        guard !isLoadingDocument, let doc = document, let page = pdfView.currentPage else { return }
         currentPageIndex = doc.index(for: page)
         ReadingPosition.save(currentPageIndex, key: documentKey)
         writeContext()

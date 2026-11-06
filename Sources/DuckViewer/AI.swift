@@ -123,11 +123,16 @@ final class AIRunner: ObservableObject {
     @Published private(set) var exitStatus: Int32?
 
     private var process: Process?
+    // 한글(3바이트)이 청크 경계에서 잘려도 깨지지 않도록 바이트를 모아 두고 전체를 다시 디코딩한다.
+    private var outBuffer = Data()
+    private var errBuffer = Data()
 
     func run(command: String, prompt: String, label: String, variables: [String: String], workingDirectory: URL?) {
         cancel()
         output = ""
         errorOutput = ""
+        outBuffer = Data()
+        errBuffer = Data()
         exitStatus = nil
         lastLabel = label
 
@@ -147,30 +152,29 @@ final class AIRunner: ObservableObject {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        stdout.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.output += text }
+            guard !data.isEmpty else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.receive(data, from: process) } }
         }
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.errorOutput += text }
+            guard !data.isEmpty else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.receive(error: data, from: process) } }
         }
-        process.terminationHandler = { [weak self] proc in
+        process.terminationHandler = { proc in
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
             // 핸들러를 끈 뒤 남은 출력을 마저 읽는다.
-            let restOut = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let restErr = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let restOut = stdout.fileHandleForReading.readDataToEndOfFile()
+            let restErr = stderr.fileHandleForReading.readDataToEndOfFile()
             let status = proc.terminationStatus
-            Task { @MainActor in
-                guard let self, self.process === proc else { return }
-                self.output += restOut
-                self.errorOutput += restErr
-                self.exitStatus = status
-                self.isRunning = false
-                self.process = nil
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.receive(restOut, from: proc)
+                    self.receive(error: restErr, from: proc)
+                    self.finish(proc, status: status)
+                }
             }
         }
 
@@ -197,6 +201,25 @@ final class AIRunner: ObservableObject {
         self.process = nil
         isRunning = false
         errorOutput += "\n(중단됨)"
+    }
+
+    private func receive(_ data: Data, from source: Process) {
+        guard process === source, !data.isEmpty else { return }
+        outBuffer.append(data)
+        output = String(decoding: outBuffer, as: UTF8.self)
+    }
+
+    private func receive(error data: Data, from source: Process) {
+        guard process === source, !data.isEmpty else { return }
+        errBuffer.append(data)
+        errorOutput = String(decoding: errBuffer, as: UTF8.self)
+    }
+
+    private func finish(_ source: Process, status: Int32) {
+        guard process === source else { return }
+        exitStatus = status
+        isRunning = false
+        process = nil
     }
 
     private func shellQuote(_ value: String) -> String {
