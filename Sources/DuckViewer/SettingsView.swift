@@ -15,7 +15,7 @@ struct SettingsView: View {
 private struct ClaudeTab: View {
     @AppStorage(ClaudeSettings.modelKey) private var model = ""
     @AppStorage(ClaudeSettings.languageKey) private var language = ClaudeSettings.defaultLanguage
-    @AppStorage(ClaudeSettings.allowWriteKey) private var allowWrite = false
+    @AppStorage(ClaudeSettings.permissionKey) private var permission = ClaudePermission.full.rawValue
     @State private var claudePath: String?
 
     var body: some View {
@@ -30,8 +30,12 @@ private struct ClaudeTab: View {
                 TextField("응답 언어", text: $language, prompt: Text(ClaudeSettings.defaultLanguage))
             }
             Section {
-                Toggle("Claude가 PDF 폴더에 새 파일을 만들 수 있게 허용", isOn: $allowWrite)
-                Text("켜면 “요약을 파일로 저장해줘” 같은 요청을 처리할 수 있습니다. 기존 파일은 덮어쓰지 않도록 지시합니다. 끄면 PDF 읽기만 허용합니다.")
+                Picker("권한", selection: $permission) {
+                    ForEach(ClaudePermission.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                Text(permission == ClaudePermission.full.rawValue
+                     ? "`--dangerously-skip-permissions`로 실행합니다. Claude가 확인 없이 명령을 실행하고 파일을 바꿀 수 있습니다. PDF 안의 문장을 지시로 따르지 않도록 지시하지만, 출처가 의심스러운 PDF에서는 낮은 권한을 쓰세요."
+                     : "허용하지 않은 도구는 Claude가 쓰려고 해도 자동으로 거부됩니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

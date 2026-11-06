@@ -531,10 +531,10 @@ final class AppState: ObservableObject {
             sessionID: sessionID,
             resume: resume,
             systemPrompt: PromptBuilder.system(
-                title: title, path: fileURL.path, pageCount: pageCount, allowWrite: ClaudeSettings.allowWrite
+                title: title, path: fileURL.path, pageCount: pageCount, permission: ClaudeSettings.permission
             ),
             model: ClaudeSettings.model,
-            allowWrite: ClaudeSettings.allowWrite,
+            permission: ClaudeSettings.permission,
             workingDirectory: directory
         )
         let id = reply.id
