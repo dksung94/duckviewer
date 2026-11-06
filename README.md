@@ -41,7 +41,7 @@ open -a "$PWD/build/DuckViewer.app" some.pdf   # 파일과 함께 열기
 |---|---|
 | `claude -p` | 기본값 |
 | `claude -p --model sonnet` | 모델 지정 |
-| `codex exec -` | |
+| `codex exec --skip-git-repo-check -` | PDF 폴더가 git 저장소가 아니어도 실행되게 |
 | `gemini -p` | |
 | `ollama run qwen3:8b` | 로컬 모델 (오프라인). `ollama pull qwen3:8b` 먼저 |
 

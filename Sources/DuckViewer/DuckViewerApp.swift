@@ -100,6 +100,8 @@ struct DuckViewerApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // AI CLI가 stdin을 다 읽기 전에 끝나도 파이프 쓰기(SIGPIPE)로 앱이 죽지 않게 한다.
+        signal(SIGPIPE, SIG_IGN)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         // 셸 환경 읽기는 1–2초 걸리므로 미리 해 둔다.

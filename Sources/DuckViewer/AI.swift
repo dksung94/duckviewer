@@ -188,6 +188,7 @@ final class AIRunner: ObservableObject {
     // 한글(3바이트)이 청크 경계에서 잘려도 깨지지 않도록 바이트를 모아 두고 전체를 다시 디코딩한다.
     private var outBuffer = Data()
     private var errBuffer = Data()
+    private var promptFile: URL?
 
     func run(command: String, prompt: String, variables: [String: String], workingDirectory: URL?, callbacks: Callbacks) {
         cancel()
@@ -197,6 +198,22 @@ final class AIRunner: ObservableObject {
         var resolved = command
         for (key, value) in variables {
             resolved = resolved.replacingOccurrences(of: "{\(key)}", with: shellQuote(value))
+        }
+        // stdin을 읽지 않는 CLI를 위해 `{prompt_file}`은 프롬프트를 담은 임시 파일 경로로 바꾼다.
+        // (프롬프트를 인자로 직접 넘기면 페이지 범위가 길 때 인자 길이 제한에 걸린다)
+        promptFile = nil
+        if resolved.contains("{prompt_file}") {
+            let file = FileManager.default.temporaryDirectory
+                .appendingPathComponent("duckviewer-prompt-\(UUID().uuidString).txt")
+            do {
+                try Data(prompt.utf8).write(to: file)
+            } catch {
+                callbacks.error("프롬프트 파일을 쓰지 못했습니다: \(error.localizedDescription)")
+                callbacks.finish(-1)
+                return
+            }
+            promptFile = file
+            resolved = resolved.replacingOccurrences(of: "{prompt_file}", with: shellQuote(file.path))
         }
 
         let process = Process()
@@ -248,7 +265,8 @@ final class AIRunner: ObservableObject {
         isRunning = true
 
         // 큰 프롬프트가 파이프 버퍼를 막지 않도록 백그라운드에서 쓴다.
-        let data = Data(prompt.utf8)
+        // 프롬프트 파일을 쓰는 경우 stdin은 비워서 닫는다. (SIGPIPE는 앱 시작 시 무시하도록 설정)
+        let data = promptFile == nil ? Data(prompt.utf8) : Data()
         DispatchQueue.global(qos: .userInitiated).async {
             try? stdin.fileHandleForWriting.write(contentsOf: data)
             try? stdin.fileHandleForWriting.close()
@@ -259,6 +277,7 @@ final class AIRunner: ObservableObject {
         guard let process, process.isRunning else { return }
         let callbacks = self.callbacks
         process.terminate()
+        removePromptFile()
         self.process = nil
         self.callbacks = nil
         isRunning = false
@@ -280,10 +299,16 @@ final class AIRunner: ObservableObject {
     private func finish(_ source: Process, status: Int32) {
         guard process === source else { return }
         let callbacks = self.callbacks
+        removePromptFile()
         process = nil
         self.callbacks = nil
         isRunning = false
         callbacks?.finish(status)
+    }
+
+    private func removePromptFile() {
+        if let promptFile { try? FileManager.default.removeItem(at: promptFile) }
+        promptFile = nil
     }
 
     private func shellQuote(_ value: String) -> String {

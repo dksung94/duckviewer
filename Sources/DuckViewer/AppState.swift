@@ -680,9 +680,6 @@ extension AppState {
             searchQuery = query
             search()
         }
-        if defaults.bool(forKey: "DVSettings") {
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-        }
         if defaults.bool(forKey: "DVFakeAI") {
             var turn = AITurn(title: "요약", icon: "text.alignleft", scopeLabel: "p.1", anchorPage: 0)
             turn.output = "**개요**: 오리는 물새다 (p.1).\n\n- 첫째 요점: AI CLI로 요약할 수 있다 (p.1)\n- 둘째 요점: 범위는 p.2–3에 걸쳐 있다\n\n## 결론\n`claude -p` 같은 명령어를 쓴다."

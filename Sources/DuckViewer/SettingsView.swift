@@ -22,10 +22,10 @@ private struct AIPreset: Identifiable {
 private let presets: [AIPreset] = [
     AIPreset(name: "Claude Code", command: "claude -p", note: "기본값"),
     AIPreset(name: "Claude Code (Sonnet)", command: "claude -p --model sonnet", note: "빠르고 저렴"),
-    AIPreset(name: "Codex CLI", command: "codex exec -", note: "stdin에서 프롬프트를 읽음"),
-    AIPreset(name: "Gemini CLI", command: "gemini -p", note: ""),
-    AIPreset(name: "Ollama 로컬 8B", command: "ollama run llama3.1:8b", note: "오프라인, `ollama pull llama3.1:8b` 필요"),
-    AIPreset(name: "Ollama 로컬 Qwen3 8B", command: "ollama run qwen3:8b", note: "한국어에 강함, `ollama pull qwen3:8b` 필요"),
+    AIPreset(name: "Codex CLI", command: "codex exec --skip-git-repo-check -", note: "stdin에서 프롬프트를 읽음"),
+    AIPreset(name: "Gemini CLI", command: "gemini", note: "미검증, stdin 입력"),
+    AIPreset(name: "Ollama 로컬 Llama 3.1 8B", command: "ollama run llama3.1:8b", note: "미검증, 오프라인, `ollama pull llama3.1:8b` 필요"),
+    AIPreset(name: "Ollama 로컬 Qwen3 8B", command: "ollama run qwen3:8b", note: "미검증, 오프라인, `ollama pull qwen3:8b` 필요"),
 ]
 
 private struct AISettingsTab: View {
@@ -52,7 +52,8 @@ private struct AISettingsTab: View {
                 }
                 Text("""
                 프롬프트는 stdin으로 전달되고, 명령어는 터미널과 같은 셸 환경(PATH 포함)에서 실행됩니다.
-                치환 변수: {file} 현재 PDF 경로, {page} 현재 페이지 번호
+                치환 변수: {file} 현재 PDF 경로, {page} 현재 페이지 번호,
+                {prompt_file} 프롬프트를 담은 임시 파일 경로 (stdin을 읽지 않는 CLI용, 예: mycli --input {prompt_file})
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
