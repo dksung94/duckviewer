@@ -102,6 +102,27 @@ struct NoteDraft: Identifiable {
     var highlights: [HighlightRegion]?
     var text = ""
     var color: NoteColor = .yellow
+    var style: NoteStyle?
+
+    /// 밑줄과 영역 메모는 설명이 있어야 각주로 의미가 있다.
+    var requiresText: Bool { style == .underline || style == .area || highlights == nil }
+
+    var heading: String {
+        switch style {
+        case .underline: "p.\(page + 1) 밑줄 + 설명"
+        case .area: "p.\(page + 1) 영역 메모"
+        case .highlight, nil: highlights == nil ? "p.\(page + 1) 페이지 메모" : "p.\(page + 1) 형광펜 메모"
+        }
+    }
+}
+
+/// 페이지 위에 그리는 [n] 각주 표시
+struct FootnoteMarker: Identifiable, Equatable {
+    /// 메모 ID
+    let id: UUID
+    let number: Int
+    /// PDFView 좌표(위쪽이 0)에서 표시의 가운데
+    let point: CGPoint
 }
 
 /// 앱 전체 상태. 창이 하나뿐이라 싱글턴으로 둔다.
@@ -154,6 +175,10 @@ final class AppState: ObservableObject {
 
     // 메모
     @Published var noteDraft: NoteDraft?
+    /// 각주를 누르면 여는 편집 시트
+    @Published var editingNote: Note?
+    @Published private(set) var footnoteMarkers: [FootnoteMarker] = []
+    @Published var hoveredFootnote: UUID?
 
     private var documentKey: String?
     private var isLoadingDocument = false
@@ -171,7 +196,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] _ in self?.selectionDidChange() }
             .store(in: &cancellables)
         center.publisher(for: .PDFViewScaleChanged, object: pdfView)
-            .sink { [weak self] _ in self?.updateSelectionRect() }
+            .sink { [weak self] _ in self?.viewportDidChange() }
             .store(in: &cancellables)
         center.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)
@@ -241,6 +266,7 @@ final class AppState: ObservableObject {
             if let page = doc.page(at: target) { self.pdfView.go(to: page) }
             self.isLoadingDocument = false
             self.pageDidChange()
+            self.updateFootnoteMarkers()
             self.rangeFrom = self.currentPageIndex + 1
             self.rangeTo = self.rangeFrom
             #if DEBUG
@@ -258,6 +284,7 @@ final class AppState: ObservableObject {
         guard !isLoadingDocument, let doc = document, let page = pdfView.currentPage else { return }
         currentPageIndex = doc.index(for: page)
         ReadingPosition.save(currentPageIndex, key: documentKey)
+        updateFootnoteMarkers()
         writeContext()
     }
 
@@ -279,6 +306,12 @@ final class AppState: ObservableObject {
     func mouseUp() {
         isMouseDown = false
         updateSelectionRect()
+    }
+
+    /// 스크롤, 확대, 페이지 이동 때 화면 위의 표시들 위치를 다시 계산한다.
+    func viewportDidChange() {
+        updateSelectionRect()
+        updateFootnoteMarkers()
     }
 
     func updateSelectionRect() {
@@ -618,7 +651,7 @@ final class AppState: ObservableObject {
         let source = [request?.title ?? request?.text.prefix(30).description, message.scopeLabel]
             .compactMap { $0 }.joined(separator: " · ")
         let note = Note(page: message.anchorPage ?? currentPageIndex, text: text, quote: nil, source: "Claude · \(source)")
-        notes.add(note)
+        add(note)
         chats.update(message.id, persist: true) { $0.savedNoteID = note.id }
     }
 
@@ -653,20 +686,31 @@ final class AppState: ObservableObject {
             highlights: regions,
             color: color
         )
-        notes.add(note)
-        addHighlightAnnotations(note)
+        add(note)
         clearSelection()
     }
 
-    /// 선택 영역이 있으면 하이라이트 + 인용, 없으면 현재 페이지 메모
-    func beginNote() {
+    /// 선택 영역이 있으면 그 텍스트에 (형광펜 또는 밑줄) 메모, 없으면 현재 페이지 메모
+    func beginNote(style: NoteStyle = .highlight) {
         guard document != nil else { return }
         if hasSelection {
             let regions = selectionRegions()
-            noteDraft = NoteDraft(page: regions.first?.page ?? currentPageIndex, quote: selectionText, highlights: regions)
+            noteDraft = NoteDraft(
+                page: regions.first?.page ?? currentPageIndex,
+                quote: selectionText,
+                highlights: regions,
+                color: style == .underline ? .blue : .yellow,
+                style: style
+            )
         } else {
             noteDraft = NoteDraft(page: currentPageIndex)
         }
+    }
+
+    /// ⌥ 드래그로 지정한 사각형에 메모 (글자를 선택할 수 없는 스캔본용)
+    func beginAreaNote(page: Int, rect: CGRect) {
+        let region = HighlightRegion(page: page, rects: [[rect.minX, rect.minY, rect.width, rect.height]])
+        noteDraft = NoteDraft(page: page, quote: nil, highlights: [region], color: .blue, style: .area)
     }
 
     func commit(_ draft: NoteDraft) {
@@ -676,30 +720,43 @@ final class AppState: ObservableObject {
             quote: draft.quote,
             source: nil,
             highlights: draft.highlights,
-            color: draft.highlights == nil ? nil : draft.color
+            color: draft.highlights == nil ? nil : draft.color,
+            style: draft.highlights == nil ? nil : draft.style
         )
-        notes.add(note)
-        addHighlightAnnotations(note)
+        add(note)
         noteDraft = nil
         clearSelection()
+    }
+
+    /// 메모를 저장하고 페이지 위 표시(하이라이트, 밑줄, 영역, 각주)를 갱신한다.
+    private func add(_ note: Note) {
+        notes.add(note)
+        addHighlightAnnotations(note)
+        updateFootnoteMarkers()
     }
 
     func updateNote(_ note: Note) {
         notes.update(note)
         removeHighlightAnnotations(note.id)
         addHighlightAnnotations(note)
+        updateFootnoteMarkers()
     }
 
     func removeNote(_ note: Note) {
         notes.remove(note)
         removeHighlightAnnotations(note.id)
+        if hoveredFootnote == note.id { hoveredFootnote = nil }
+        updateFootnoteMarkers()
     }
 
     func show(_ note: Note) {
         guard let doc = document, let region = note.highlights?.first, let rect = region.rects.first,
               let page = doc.page(at: region.page)
         else {
-            goToPage(note.page)
+            // 페이지 메모는 각주가 있는 페이지 하단이 보이도록 이동한다.
+            guard let page = document?.page(at: note.markerPage) else { return }
+            let bounds = page.bounds(for: pdfView.displayBox)
+            pdfView.go(to: CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: 200), on: page)
             return
         }
         let bounds = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
@@ -708,19 +765,77 @@ final class AppState: ObservableObject {
 
     private func addHighlightAnnotations(_ note: Note) {
         guard let doc = document, let regions = note.highlights else { return }
-        let color = (note.color ?? .yellow).nsColor.withAlphaComponent(0.45)
+        let base = (note.color ?? .yellow).nsColor
         var created: [PDFAnnotation] = []
         for region in regions {
             guard let page = doc.page(at: region.page) else { continue }
             for rect in region.rects where rect.count == 4 {
                 let bounds = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
-                let annotation = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
-                annotation.color = color
+                let annotation: PDFAnnotation
+                switch note.kind {
+                case .underline:
+                    annotation = PDFAnnotation(bounds: bounds, forType: .underline, withProperties: nil)
+                    annotation.color = base
+                case .area:
+                    annotation = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
+                    annotation.color = base
+                    annotation.interiorColor = base.withAlphaComponent(0.06)
+                    let border = PDFBorder()
+                    border.lineWidth = 1.5
+                    annotation.border = border
+                case .highlight, .page:
+                    annotation = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
+                    annotation.color = base.withAlphaComponent(0.45)
+                }
                 page.addAnnotation(annotation)
                 created.append(annotation)
             }
         }
         highlightAnnotations[note.id] = created
+    }
+
+    // MARK: - 각주 표시
+
+    /// 화면에 보이는 페이지의 각주 위치를 PDFView 좌표로 계산한다.
+    func updateFootnoteMarkers() {
+        guard let doc = document else {
+            if !footnoteMarkers.isEmpty { footnoteMarkers = [] }
+            return
+        }
+        let numbers = notes.footnoteNumbers
+        let visible = Set(pdfView.visiblePages.map { doc.index(for: $0) })
+        var markers: [FootnoteMarker] = []
+        var pageNotes: [Int: [Note]] = [:]
+        for note in notes.notes where note.isFootnote && visible.contains(note.markerPage) {
+            guard let number = numbers[note.id], let page = doc.page(at: note.markerPage) else { continue }
+            if let anchor = note.markerAnchor {
+                // 마지막 줄 오른쪽 위에 위첨자처럼 붙인다.
+                let point = viewPoint(anchor, on: page)
+                markers.append(FootnoteMarker(id: note.id, number: number, point: CGPoint(x: point.x + 9, y: point.y - 3)))
+            } else {
+                pageNotes[note.markerPage, default: []].append(note)
+            }
+        }
+        // 페이지 메모는 페이지 하단 가운데에 나란히 놓는다.
+        for (index, group) in pageNotes {
+            guard let page = doc.page(at: index) else { continue }
+            let bounds = page.bounds(for: pdfView.displayBox)
+            let center = viewPoint(CGPoint(x: bounds.midX, y: bounds.minY + 24), on: page)
+            let ordered = group.sorted { (numbers[$0.id] ?? 0) < (numbers[$1.id] ?? 0) }
+            for (offset, note) in ordered.enumerated() {
+                let dx = (CGFloat(offset) - CGFloat(ordered.count - 1) / 2) * 30
+                markers.append(FootnoteMarker(id: note.id, number: numbers[note.id] ?? 0, point: CGPoint(x: center.x + dx, y: center.y)))
+            }
+        }
+        let visibleRect = pdfView.bounds.insetBy(dx: -20, dy: -20)
+        markers = markers.filter { visibleRect.contains($0.point) }
+        if markers != footnoteMarkers { footnoteMarkers = markers }
+    }
+
+    private func viewPoint(_ point: CGPoint, on page: PDFPage) -> CGPoint {
+        var converted = pdfView.convert(point, from: page)
+        if !pdfView.isFlipped { converted.y = pdfView.bounds.height - converted.y }
+        return converted
     }
 
     private func removeHighlightAnnotations(_ id: UUID) {
@@ -804,6 +919,46 @@ extension AppState {
                     timer.invalidate()
                     self.runAI(.ask(question), scope: .currentPage)
                 }
+            }
+        }
+        // "페이지:찾을 텍스트:설명" 형식. 여러 개는 | 로 구분
+        for spec in (defaults.string(forKey: "DVUnderline") ?? "").split(separator: "|") {
+            let parts = spec.split(separator: ":", maxSplits: 2).map(String.init)
+            guard parts.count == 3, let pageNumber = Int(parts[0]), let doc = document,
+                  let match = doc.findString(parts[1], withOptions: .caseInsensitive)
+                      .first(where: { $0.pages.first.map(doc.index(for:)) == pageNumber - 1 })
+            else { continue }
+            pdfView.setCurrentSelection(match, animate: false)
+            beginNote(style: .underline)
+            if var draft = noteDraft {
+                draft.text = parts[2]
+                commit(draft)
+            }
+        }
+        // "페이지:x,y,w,h:설명" (PDF 좌표)
+        if let spec = defaults.string(forKey: "DVArea") {
+            let parts = spec.split(separator: ":", maxSplits: 2).map(String.init)
+            let numbers = parts.count == 3 ? parts[1].split(separator: ",").compactMap { Double($0) } : []
+            if numbers.count == 4, let pageNumber = Int(parts[0]) {
+                beginAreaNote(page: pageNumber - 1, rect: CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3]))
+                if var draft = noteDraft {
+                    draft.text = parts[2]
+                    commit(draft)
+                }
+            }
+        }
+        if let text = defaults.string(forKey: "DVPageNote") {
+            add(Note(page: currentPageIndex, text: text, quote: nil, source: "Claude · 요약 · p.\(currentPageIndex + 1)"))
+        }
+        if let page = defaults.object(forKey: "DVGoToPage") as? Int ?? Int(defaults.string(forKey: "DVGoToPage") ?? "") {
+            goToPage(page - 1)
+        }
+        let hoverNumber = defaults.integer(forKey: "DVHover")
+        if hoverNumber > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self else { return }
+                self.updateFootnoteMarkers()
+                self.hoveredFootnote = self.footnoteMarkers.first { $0.number == hoverNumber }?.id
             }
         }
         guard let spec = defaults.string(forKey: "DVSelect"), let colon = spec.firstIndex(of: ":"),

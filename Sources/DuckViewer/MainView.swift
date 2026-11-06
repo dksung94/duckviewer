@@ -27,6 +27,9 @@ struct MainView: View {
         .sheet(item: $state.noteDraft) { draft in
             NoteDraftSheet(draft: draft)
         }
+        .sheet(item: $state.editingNote) { note in
+            NoteEditSheet(note: note)
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in

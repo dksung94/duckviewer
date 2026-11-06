@@ -1,3 +1,4 @@
+import CoreGraphics
 import CryptoKit
 import Foundation
 
@@ -139,8 +140,43 @@ struct Note: Codable, Identifiable, Equatable {
     // 아래부터는 v0.2에서 추가. 이전 파일과 호환되도록 모두 Optional로 둔다.
     var highlights: [HighlightRegion]?
     var color: NoteColor?
+    // v0.4: 밑줄 각주와 영역 메모. nil이면 하이라이트
+    var style: NoteStyle?
 
     var isHighlight: Bool { !(highlights?.isEmpty ?? true) }
+
+    var kind: NoteKind {
+        guard isHighlight else { return .page }
+        switch style ?? .highlight {
+        case .highlight: return .highlight
+        case .underline: return .underline
+        case .area: return .area
+        }
+    }
+
+    /// 페이지 위에 [n] 각주로 표시하는 메모. 설명이 없는 형광펜은 번호를 달지 않는다.
+    var isFootnote: Bool {
+        kind != .highlight || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 각주 번호가 붙는 페이지. 여러 페이지에 걸친 선택은 마지막 페이지 끝에 붙는다.
+    var markerPage: Int { highlights?.last?.page ?? page }
+
+    /// 각주를 붙일 PDF 좌표 (마지막 줄 오른쪽 위). 페이지 메모는 nil (페이지 하단 가운데)
+    var markerAnchor: CGPoint? {
+        guard let rect = highlights?.last?.rects.last, rect.count == 4 else { return nil }
+        return CGPoint(x: rect[0] + rect[2], y: rect[1] + rect[3])
+    }
+}
+
+enum NoteStyle: String, Codable {
+    case highlight, underline, area
+}
+
+enum NoteKind {
+    /// 위치 없이 페이지 전체에 단 메모 (페이지 하단 가운데)
+    case page
+    case highlight, underline, area
 }
 
 @MainActor
@@ -189,16 +225,42 @@ final class NotesStore: ObservableObject {
         notes.sorted { ($0.page, $0.createdAt) < ($1.page, $1.createdAt) }
     }
 
+    /// 페이지마다 1부터 매기는 각주 번호. 위에서 아래, 왼쪽에서 오른쪽 순서이고 페이지 메모는 맨 뒤에 온다.
+    var footnoteNumbers: [UUID: Int] {
+        var numbers: [UUID: Int] = [:]
+        let byPage = Dictionary(grouping: notes.filter(\.isFootnote), by: \.markerPage)
+        for (_, pageNotes) in byPage {
+            let ordered = pageNotes.sorted { a, b in
+                switch (a.markerAnchor, b.markerAnchor) {
+                case let (pa?, pb?):
+                    // PDF 좌표는 아래가 0이라 y가 클수록 위쪽이다. 같은 줄은 왼쪽부터
+                    if abs(pa.y - pb.y) > 4 { return pa.y > pb.y }
+                    return pa.x < pb.x
+                case (.some, nil): return true
+                case (nil, .some): return false
+                case (nil, nil): return a.createdAt < b.createdAt
+                }
+            }
+            for (index, note) in ordered.enumerated() { numbers[note.id] = index + 1 }
+        }
+        return numbers
+    }
+
     /// Obsidian 등에서 바로 쓸 수 있는 Markdown
     func markdown(title: String) -> String {
         var lines = ["# \(title)", ""]
         if let fileURL { lines += ["- 파일: `\(fileURL.path)`", "- 내보낸 날짜: \(Date().formatted(date: .abbreviated, time: .shortened))", ""] }
         var lastPage = -1
-        for note in sorted {
-            if note.page != lastPage {
-                lines += ["## p.\(note.page + 1)", ""]
-                lastPage = note.page
+        let numbers = footnoteNumbers
+        let ordered = notes.sorted {
+            ($0.markerPage, numbers[$0.id] ?? 0, $0.createdAt) < ($1.markerPage, numbers[$1.id] ?? 0, $1.createdAt)
+        }
+        for note in ordered {
+            if note.markerPage != lastPage {
+                lines += ["## p.\(note.markerPage + 1)", ""]
+                lastPage = note.markerPage
             }
+            if let number = numbers[note.id] { lines.append("**[\(number)]**") }
             if let quote = note.quote, !quote.isEmpty {
                 lines += quote.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }
                 lines.append("")

@@ -39,6 +39,9 @@ struct DuckViewerApp: App {
                 Button("하이라이트") { state.highlightSelection() }
                     .keyboardShortcut("h", modifiers: [.command, .shift])
                     .disabled(!state.hasSelection)
+                Button("밑줄 긋고 설명 달기…") { state.beginNote(style: .underline) }
+                    .keyboardShortcut("u", modifiers: [.command, .shift])
+                    .disabled(!state.hasSelection)
                 Button("메모 추가…") { state.beginNote() }
                     .keyboardShortcut("m", modifiers: [.command, .shift])
                     .disabled(state.document == nil)

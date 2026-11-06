@@ -125,9 +125,9 @@ private struct OutlineList: View {
 
 private struct NotesList: View {
     @EnvironmentObject private var state: AppState
-    @State private var editing: Note?
 
     var body: some View {
+        let numbers = state.notes.footnoteNumbers
         VStack(spacing: 0) {
             SectionHeader(title: "메모 \(state.notes.notes.count)개") {
                 Button { state.beginNote() } label: { Image(systemName: "plus") }
@@ -144,14 +144,14 @@ private struct NotesList: View {
             .buttonStyle(.borderless)
             Divider()
             if state.notes.notes.isEmpty {
-                placeholder("텍스트를 선택한 뒤 하이라이트하거나\n메모를 추가해 보세요", systemImage: "highlighter")
+                placeholder("텍스트를 선택해 형광펜이나 밑줄+설명을 달거나\n메모를 추가해 보세요.\n글자가 선택되지 않는 스캔본은 ⌥ 드래그로\n영역에 메모를 달 수 있습니다.", systemImage: "highlighter")
             } else {
                 List(state.notes.sorted) { note in
-                    NoteRow(note: note)
+                    NoteRow(note: note, number: numbers[note.id])
                         .contentShape(Rectangle())
                         .onTapGesture { state.show(note) }
                         .contextMenu {
-                            Button("메모 편집…") { editing = note }
+                            Button("메모 편집…") { state.editingNote = note }
                             if note.isHighlight {
                                 Menu("색상") {
                                     ForEach(NoteColor.allCases, id: \.self) { color in
@@ -170,14 +170,12 @@ private struct NotesList: View {
                 .listStyle(.inset)
             }
         }
-        .sheet(item: $editing) { note in
-            NoteEditSheet(note: note) { state.updateNote($0) }
-        }
     }
 }
 
 private struct NoteRow: View {
     let note: Note
+    let number: Int?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -186,7 +184,15 @@ private struct NoteRow: View {
                 .frame(width: 3)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
-                    Text("p.\(note.page + 1)").font(.caption.weight(.semibold))
+                    Text("p.\(note.markerPage + 1)").font(.caption.weight(.semibold))
+                    if let number {
+                        Text("[\(number)]").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+                    }
+                    if note.kind == .underline {
+                        Image(systemName: "underline").font(.caption2).foregroundStyle(.secondary)
+                    } else if note.kind == .area {
+                        Image(systemName: "rectangle.dashed").font(.caption2).foregroundStyle(.secondary)
+                    }
                     if let source = note.source {
                         Label(source, systemImage: "sparkles")
                             .font(.caption2)
@@ -203,6 +209,9 @@ private struct NoteRow: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(4)
+                }
+                if note.kind == .area, note.quote == nil {
+                    Text("영역 메모").font(.caption).foregroundStyle(.tertiary)
                 }
                 if !note.text.isEmpty {
                     // Claude 답을 저장한 메모는 Markdown이므로 답변 화면과 같이 그린다.
@@ -224,7 +233,7 @@ struct NoteDraftSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("p.\(draft.page + 1)에 메모").font(.headline)
+            Text(draft.heading).font(.headline)
             if let quote = draft.quote {
                 Text(quote)
                     .font(.callout)
@@ -233,7 +242,9 @@ struct NoteDraftSheet: View {
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(draft.color.color.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
-                Picker("하이라이트 색", selection: $draft.color) {
+            }
+            if draft.highlights != nil {
+                Picker(draft.style == .highlight ? "형광펜 색" : "색", selection: $draft.color) {
                     ForEach(NoteColor.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -249,7 +260,7 @@ struct NoteDraftSheet: View {
                 Button("저장") { state.commit(draft) }
                     .keyboardShortcut(.return, modifiers: .command)
                     .buttonStyle(.borderedProminent)
-                    .disabled(draft.quote == nil && draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(draft.requiresText && draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
@@ -257,32 +268,51 @@ struct NoteDraftSheet: View {
     }
 }
 
-private struct NoteEditSheet: View {
+/// 메모 편집 (메모 목록 우클릭, 페이지 위 [n] 클릭)
+struct NoteEditSheet: View {
+    @EnvironmentObject private var state: AppState
     @State var note: Note
-    let save: (Note) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("p.\(note.page + 1) 메모 편집").font(.headline)
+            HStack {
+                if let number = state.notes.footnoteNumbers[note.id] {
+                    Text("[\(number)]").font(.headline).foregroundStyle(Color.accentColor)
+                }
+                Text("p.\(note.markerPage + 1) 메모 편집").font(.headline)
+            }
             if let quote = note.quote, !quote.isEmpty {
                 Text(quote).font(.callout).foregroundStyle(.secondary).lineLimit(6)
             }
+            if note.isHighlight {
+                Picker("색", selection: Binding(get: { note.color ?? .yellow }, set: { note.color = $0 })) {
+                    ForEach(NoteColor.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
             TextEditor(text: $note.text)
                 .font(.body)
-                .frame(minHeight: 140)
+                .frame(minHeight: 160)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
             HStack {
+                Button("삭제", role: .destructive) {
+                    state.removeNote(note)
+                    dismiss()
+                }
                 Spacer()
                 Button("취소", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("저장") { save(note); dismiss() }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .buttonStyle(.borderedProminent)
+                Button("저장") {
+                    state.updateNote(note)
+                    dismiss()
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .buttonStyle(.borderedProminent)
             }
         }
         .padding(20)
-        .frame(width: 440)
+        .frame(width: 460)
     }
 }
 
