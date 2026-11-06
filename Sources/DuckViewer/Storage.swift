@@ -319,8 +319,20 @@ struct ChatMessage: Codable, Identifiable, Equatable {
     var durationMs: Int?
     /// "메모로 저장"으로 만든 메모. 같은 답을 여러 번 저장하지 않도록 기억한다.
     var savedNoteID: UUID?
+    /// 이 답변 중에 Claude가 `duckviewer` 명령으로 앱에서 한 일 (한 줄씩)
+    var actionResults: [String]?
+    var actionUndo: ActionUndo?
 
     var isRunning: Bool { status == .running }
+}
+
+/// Claude가 앱에서 한 일을 되돌리기 위한 기록
+struct ActionUndo: Codable, Equatable {
+    var created: [UUID] = []
+    var deleted: [Note] = []
+    /// 수정하기 전 메모
+    var edited: [Note] = []
+    var undone = false
 }
 
 /// 문서 하나에 Claude 세션 하나. 세션은 시작한 폴더(cwd)에 묶이므로 함께 저장한다.

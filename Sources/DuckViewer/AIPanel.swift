@@ -156,10 +156,15 @@ private struct AssistantMessage: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            if let results = message.actionResults, !results.isEmpty {
+                ActionsBox(message: message, results: results)
+            }
+
             if message.isRunning {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
                     Text(message.activity ?? (message.text.isEmpty ? "생각하는 중…" : "쓰는 중…"))
+                        .lineLimit(1)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -210,6 +215,37 @@ private struct AssistantMessage: View {
         if let ms = message.durationMs { parts.append(String(format: "%.1f초", Double(ms) / 1000)) }
         if let cost = message.costUSD { parts.append(String(format: "$%.3f", cost)) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// 이 답변 중에 Claude가 앱에서 한 일 (duckviewer 명령)
+private struct ActionsBox: View {
+    @EnvironmentObject private var state: AppState
+    let message: ChatMessage
+    let results: [String]
+
+    var body: some View {
+        let undone = message.actionUndo?.undone ?? false
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("앱에서 한 일", systemImage: "wand.and.stars").font(.caption.weight(.semibold))
+                Spacer()
+                if undone {
+                    Text("되돌림").font(.caption).foregroundStyle(.secondary)
+                } else if !message.isRunning {
+                    Button("되돌리기", systemImage: "arrow.uturn.backward") { state.undoActions(of: message) }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
+            }
+            ForEach(Array(results.enumerated()), id: \.offset) { _, line in
+                Text("• \(line)").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(undone ? 0.04 : 0.08), in: RoundedRectangle(cornerRadius: 8))
+        .strikethrough(undone)
     }
 }
 

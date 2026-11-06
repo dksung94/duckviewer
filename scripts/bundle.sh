@@ -15,6 +15,8 @@ BIN="$(swift build -c "$CONFIG" --show-bin-path)/DuckViewer"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DuckViewer"
+# Claude Code 세션에 --plugin-dir로 넘기는 duckviewer 스킬
+cp -R "$ROOT/Plugin" "$APP/Contents/Resources/ClaudePlugin"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -146,7 +146,11 @@ private struct NotesList: View {
             if state.notes.notes.isEmpty {
                 placeholder("텍스트를 선택해 형광펜이나 밑줄+설명을 달거나\n메모를 추가해 보세요.\n글자가 선택되지 않는 스캔본은 ⌥ 드래그로\n영역에 메모를 달 수 있습니다.", systemImage: "highlighter")
             } else {
-                List(state.notes.sorted) { note in
+                // 페이지 순, 같은 페이지는 각주 번호 순 (번호 없는 형광펜은 뒤로)
+                let ordered = state.notes.notes.sorted {
+                    ($0.markerPage, numbers[$0.id] ?? Int.max, $0.createdAt) < ($1.markerPage, numbers[$1.id] ?? Int.max, $1.createdAt)
+                }
+                List(ordered) { note in
                     NoteRow(note: note, number: numbers[note.id])
                         .contentShape(Rectangle())
                         .onTapGesture { state.show(note) }

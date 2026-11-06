@@ -179,6 +179,8 @@ final class AppState: ObservableObject {
     @Published var editingNote: Note?
     @Published private(set) var footnoteMarkers: [FootnoteMarker] = []
     @Published var hoveredFootnote: UUID?
+    /// 지금 응답을 받고 있는 Claude 답변. 이 사이에 들어온 `duckviewer` 명령의 변경을 여기에 기록한다.
+    private(set) var activeReplyID: UUID?
 
     private var documentKey: String?
     private var isLoadingDocument = false
@@ -543,6 +545,7 @@ final class AppState: ObservableObject {
     private func send(_ prompt: String, anchor: Int, scopeLabel: String, fileURL: URL, retryWithNewSession: Bool) {
         let reply = ChatMessage(role: .assistant, text: "", scopeLabel: scopeLabel, anchorPage: anchor, status: .running)
         chats.append(reply)
+        activeReplyID = reply.id
 
         // 세션은 처음 시작한 폴더에서만 이어갈 수 있다. 폴더가 사라졌으면 새로 시작한다.
         let pdfDirectory = fileURL.deletingLastPathComponent()
@@ -568,7 +571,8 @@ final class AppState: ObservableObject {
             ),
             model: ClaudeSettings.model,
             permission: ClaudeSettings.permission,
-            workingDirectory: directory
+            workingDirectory: directory,
+            documentKey: documentKey
         )
         let id = reply.id
         claude.run(request) { [weak self] event in
@@ -579,6 +583,7 @@ final class AppState: ObservableObject {
             case let .activity(activity):
                 self.chats.update(id) { $0.activity = activity }
             case let .finished(outcome):
+                if self.activeReplyID == id { self.activeReplyID = nil }
                 // Claude 쪽 세션 파일이 사라졌으면 새 세션으로 한 번 다시 보낸다.
                 if resume, retryWithNewSession, !outcome.success, !outcome.cancelled,
                    (outcome.error ?? "").localizedCaseInsensitiveContains("no conversation found") {
@@ -663,7 +668,13 @@ final class AppState: ObservableObject {
     // MARK: - 메모와 하이라이트
 
     private func selectionRegions() -> [HighlightRegion] {
-        guard let selection = pdfView.currentSelection, let doc = document else { return [] }
+        guard let selection = pdfView.currentSelection else { return [] }
+        return regions(of: selection)
+    }
+
+    /// 선택 영역을 줄 단위 사각형으로 바꾼다. 여러 쪽에 걸치면 쪽마다 나눈다.
+    func regions(of selection: PDFSelection) -> [HighlightRegion] {
+        guard let doc = document else { return [] }
         var byPage: [Int: [[Double]]] = [:]
         for line in selection.selectionsByLine() {
             for page in line.pages {
@@ -729,7 +740,7 @@ final class AppState: ObservableObject {
     }
 
     /// 메모를 저장하고 페이지 위 표시(하이라이트, 밑줄, 영역, 각주)를 갱신한다.
-    private func add(_ note: Note) {
+    func add(_ note: Note) {
         notes.add(note)
         addHighlightAnnotations(note)
         updateFootnoteMarkers()
@@ -792,6 +803,43 @@ final class AppState: ObservableObject {
             }
         }
         highlightAnnotations[note.id] = created
+    }
+
+    // MARK: - duckviewer 명령으로 한 변경
+
+    var documentKeyValue: String? { documentKey }
+
+    /// Claude가 `duckviewer` 명령으로 메모를 추가할 때
+    func addFromControl(_ note: Note, summary: String) {
+        add(note)
+        recordControlChange(summary) { $0.created.append(note.id) }
+    }
+
+    /// 응답 중인 답변에 한 일을 적고 되돌리기 정보를 모은다. 터미널에서 직접 부른 명령은 기록하지 않는다.
+    func recordControlChange(_ summary: String?, _ change: (inout ActionUndo) -> Void) {
+        guard let id = activeReplyID else { return }
+        chats.update(id, persist: true) { message in
+            var undo = message.actionUndo ?? ActionUndo()
+            change(&undo)
+            message.actionUndo = undo
+            if let summary { message.actionResults = (message.actionResults ?? []) + [summary] }
+        }
+    }
+
+    /// 답변이 앱에서 한 일을 되돌린다.
+    func undoActions(of message: ChatMessage) {
+        guard var undo = message.actionUndo, !undo.undone else { return }
+        for id in undo.created {
+            if let note = notes.notes.first(where: { $0.id == id }) { removeNote(note) }
+        }
+        for note in undo.edited.reversed() where notes.notes.contains(where: { $0.id == note.id }) {
+            updateNote(note)
+        }
+        for note in undo.deleted where !notes.notes.contains(where: { $0.id == note.id }) {
+            add(note)
+        }
+        undo.undone = true
+        chats.update(message.id, persist: true) { $0.actionUndo = undo }
     }
 
     // MARK: - 각주 표시
@@ -906,6 +954,10 @@ extension AppState {
                 let range = pageRange(of: item)
                 runAI(.template(template), scope: .chapter(item.title, range.lowerBound, range.upperBound))
             }
+        }
+        if defaults.bool(forKey: "DVUndoLast"),
+           let message = messages.last(where: { $0.actionUndo != nil && $0.actionUndo?.undone == false }) {
+            undoActions(of: message)
         }
         if defaults.bool(forKey: "DVSaveNote"), let answer = messages.first(where: { $0.status == .done }) {
             saveAsNote(answer)

@@ -1,7 +1,21 @@
 import AppKit
 import SwiftUI
 
+/// `duckviewer`라는 이름(또는 `DuckViewer ctl`)으로 실행되면 명령줄 모드, 아니면 앱
 @main
+enum Entry {
+    static func main() {
+        let arguments = CommandLine.arguments
+        if (arguments[0] as NSString).lastPathComponent == "duckviewer" {
+            exit(ControlCLI.run(Array(arguments.dropFirst())))
+        }
+        if arguments.count > 1, arguments[1] == "ctl" {
+            exit(ControlCLI.run(Array(arguments.dropFirst(2))))
+        }
+        DuckViewerApp.main()
+    }
+}
+
 struct DuckViewerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var state = AppState.shared
@@ -110,6 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGPIPE, SIG_IGN)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Claude가 쓰는 `duckviewer` 명령
+        ControlPaths.installCommandLink()
+        ControlServer.shared.start { AppState.shared.handleControl($0) }
         // 셸 환경 읽기는 1–2초 걸리므로 미리 해 둔다.
         DispatchQueue.global(qos: .utility).async { _ = ShellEnvironment.resolved }
         // `DuckViewer path/to/file.pdf` 형태로 실행했을 때 바로 연다.
